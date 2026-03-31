@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import time
 from collections import OrderedDict, deque
 from datetime import datetime, timedelta, timezone
@@ -777,72 +778,212 @@ class WazuhClient:
         }
 
     async def perform_risk_assessment(self, agent_id: str = None) -> Dict[str, Any]:
-        """Perform risk assessment from real agent and vulnerability data."""
+        """Perform risk assessment from agent status, vulnerability data, and alert severity."""
+
         risk_factors: list = []
         params: Dict[str, Any] = {"select": "id,name,status,os.name,version"}
         if agent_id:
             params["agents_list"] = agent_id
         agents = await self._request("GET", "/agents", params=params)
         items = agents.get("data", {}).get("affected_items", [])
+        total_agents = len(items)
         disconnected = [a for a in items if a.get("status") != "active"]
         if disconnected:
-            risk_factors.append({"factor": "disconnected_agents", "count": len(disconnected), "severity": "high"})
+            risk_factors.append({
+                "factor": "disconnected_agents",
+                "count": len(disconnected),
+                "severity": "high",
+                "details": [{"id": a.get("id"), "name": a.get("name")} for a in disconnected[:10]],
+            })
+
+        # Vulnerability risk
+        vuln_data: Dict[str, Any] = {}
         if self._indexer_client:
             try:
                 vuln_summary = await self._indexer_client.get_vulnerability_summary()
-                critical = vuln_summary.get("data", {}).get("critical", 0)
+                vuln_data = vuln_summary.get("data", {})
+                critical = vuln_data.get("critical", 0)
+                high = vuln_data.get("high", 0)
                 if critical > 0:
-                    risk_factors.append(
-                        {"factor": "critical_vulnerabilities", "count": critical, "severity": "critical"}
-                    )
+                    risk_factors.append({"factor": "critical_vulnerabilities", "count": critical, "severity": "critical"})
+                if high > 0:
+                    risk_factors.append({"factor": "high_vulnerabilities", "count": high, "severity": "high"})
             except Exception:
                 pass
-        if any(f["severity"] == "critical" for f in risk_factors):
+
+        # Alert severity risk — count high-level alerts in last 24h
+        alert_summary: Dict[str, int] = {}
+        if self._indexer_client:
+            try:
+                start = self._time_range_to_start("24h")
+                result = await self._indexer_client.get_alerts(limit=500, timestamp_start=start, level="10")
+                high_alerts = result.get("data", {}).get("affected_items", [])
+                alert_summary["high_severity_alerts_24h"] = len(high_alerts)
+                if len(high_alerts) > 10:
+                    risk_factors.append({
+                        "factor": "high_severity_alerts",
+                        "count": len(high_alerts),
+                        "severity": "high",
+                    })
+                elif len(high_alerts) > 0:
+                    risk_factors.append({
+                        "factor": "elevated_alert_activity",
+                        "count": len(high_alerts),
+                        "severity": "medium",
+                    })
+            except Exception:
+                pass
+
+        # SCA compliance risk — sample first active agent
+        sca_score: Optional[int] = None
+        try:
+            active_agents = [a for a in items if a.get("status") == "active"]
+            if active_agents:
+                sca = await self._request("GET", f"/sca/{active_agents[0].get('id')}")
+                sca_items = sca.get("data", {}).get("affected_items", [])
+                if sca_items:
+                    scores = [p.get("score", 0) for p in sca_items if isinstance(p.get("score"), (int, float))]
+                    if scores:
+                        sca_score = int(sum(scores) / len(scores))
+                        if sca_score < 50:
+                            risk_factors.append({
+                                "factor": "low_sca_compliance",
+                                "score": sca_score,
+                                "severity": "high",
+                            })
+                        elif sca_score < 70:
+                            risk_factors.append({
+                                "factor": "moderate_sca_compliance",
+                                "score": sca_score,
+                                "severity": "medium",
+                            })
+        except Exception:
+            pass
+
+        # Calculate weighted risk score (0-100)
+        score = 0
+        severity_weights = {"critical": 30, "high": 20, "medium": 10, "low": 5}
+        for f in risk_factors:
+            weight = severity_weights.get(f["severity"], 5)
+            count = f.get("count", 1)
+            score += weight * min(math.log2(count + 1), 5)  # Diminishing returns on count
+        overall_risk_score = min(100, int(score))
+
+        if overall_risk_score >= 70:
             risk_level = "critical"
-        elif any(f["severity"] == "high" for f in risk_factors):
+        elif overall_risk_score >= 50:
             risk_level = "high"
-        elif risk_factors:
+        elif overall_risk_score >= 25:
             risk_level = "medium"
         else:
             risk_level = "low"
+
         return {
             "data": {
-                "total_agents": len(items),
-                "risk_factors": risk_factors,
+                "overall_risk_score": overall_risk_score,
                 "risk_level": risk_level,
+                "total_agents": total_agents,
+                "risk_factors": risk_factors,
+                "vulnerability_summary": vuln_data if vuln_data else None,
+                "alert_summary": alert_summary if alert_summary else None,
+                "sca_average_score": sca_score,
             }
         }
 
     async def get_top_security_threats(self, limit: int, time_range: str) -> Dict[str, Any]:
-        """Get top threats by alert rule frequency from Indexer."""
+        """Get top threats with source IPs, affected agents, and timeline from Indexer."""
         if not self._indexer_client:
             raise IndexerNotConfiguredError()
         start = self._time_range_to_start(time_range)
         result = await self._indexer_client.get_alerts(limit=1000, timestamp_start=start)
         alerts = result.get("data", {}).get("affected_items", [])
-        rule_counts: Dict[str, Dict[str, Any]] = {}
+
+        rule_data: Dict[str, Dict[str, Any]] = {}
         for alert in alerts:
             rule = alert.get("rule", {})
             rule_id = rule.get("id", "unknown")
-            if rule_id not in rule_counts:
-                rule_counts[rule_id] = {
+            if rule_id not in rule_data:
+                rule_data[rule_id] = {
                     "rule_id": rule_id,
                     "description": rule.get("description", ""),
                     "level": rule.get("level", 0),
                     "count": 0,
                     "groups": rule.get("groups", []),
+                    "mitre": rule.get("mitre", {}),
+                    "source_ips": set(),
+                    "affected_agents": set(),
+                    "first_seen": None,
+                    "last_seen": None,
                 }
-            rule_counts[rule_id]["count"] += 1
-        threats = sorted(rule_counts.values(), key=lambda x: (-x.get("level", 0), -x["count"]))[:limit]
-        return {"data": {"time_range": time_range, "threats": threats, "total_unique_rules": len(rule_counts)}}
+            entry = rule_data[rule_id]
+            entry["count"] += 1
+            # Extract source IPs
+            src_ip = alert.get("data", {}).get("srcip")
+            if src_ip:
+                entry["source_ips"].add(src_ip)
+            # Extract affected agents
+            agent_id = alert.get("agent", {}).get("id")
+            agent_name = alert.get("agent", {}).get("name", "")
+            if agent_id:
+                entry["affected_agents"].add(f"{agent_id}:{agent_name}")
+            # Track timeline
+            ts = alert.get("timestamp")
+            if ts:
+                if entry["first_seen"] is None or ts < entry["first_seen"]:
+                    entry["first_seen"] = ts
+                if entry["last_seen"] is None or ts > entry["last_seen"]:
+                    entry["last_seen"] = ts
+
+        # Calculate threat score and build output
+        threats = []
+        for rule_id, data in rule_data.items():
+            level = data["level"]
+            count = data["count"]
+            # Score: level weight * log(count) * affected_systems_factor
+            affected_count = len(data["affected_agents"])
+            threat_score = min(100, int(level * 5 * math.log2(count + 1) * (1 + 0.1 * affected_count)))
+
+            threats.append({
+                "rule_id": rule_id,
+                "description": data["description"],
+                "level": level,
+                "count": count,
+                "threat_score": threat_score,
+                "groups": data["groups"],
+                "mitre": data["mitre"] if data["mitre"] else None,
+                "source_ips": sorted(data["source_ips"])[:20],  # Cap at 20
+                "affected_agents": [
+                    {"id": a.split(":")[0], "name": a.split(":", 1)[1] if ":" in a else ""}
+                    for a in sorted(data["affected_agents"])
+                ][:20],
+                "first_seen": data["first_seen"],
+                "last_seen": data["last_seen"],
+            })
+
+        threats.sort(key=lambda x: (-x["threat_score"], -x["count"]))
+        return {
+            "data": {
+                "time_range": time_range,
+                "total_alerts_analyzed": len(alerts),
+                "threats": threats[:limit],
+                "total_unique_rules": len(rule_data),
+            }
+        }
 
     async def generate_security_report(self, report_type: str, include_recommendations: bool) -> Dict[str, Any]:
-        """Generate security report by aggregating data from multiple real endpoints."""
+        """Generate security report with content differentiated by report_type."""
+        # Time range varies by report type
+        time_ranges = {"daily": "24h", "weekly": "7d", "monthly": "30d", "incident": "1h"}
+        tr = time_ranges.get(report_type, "24h")
+
         report: Dict[str, Any] = {
             "report_type": report_type,
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "time_range": tr,
             "sections": {},
         }
+
+        # Section 1: Agent status (all report types)
         try:
             agents = await self._request("GET", "/agents", params={"limit": 500})
             items = agents.get("data", {}).get("affected_items", [])
@@ -850,42 +991,209 @@ class WazuhClient:
             report["sections"]["agents"] = {"total": len(items), "active": active, "disconnected": len(items) - active}
         except Exception as e:
             report["sections"]["agents"] = {"error": str(e)}
+
+        # Section 2: Manager info (all report types)
         try:
             info = await self._request("GET", "/")
-            report["sections"]["manager"] = info.get("data", {})
+            mgr = info.get("data", {})
+            report["sections"]["manager"] = {
+                "version": mgr.get("api_version"), "hostname": mgr.get("hostname"), "type": mgr.get("type"),
+            }
         except Exception as e:
             report["sections"]["manager"] = {"error": str(e)}
+
+        # Section 3: Alert summary (all report types)
+        if self._indexer_client:
+            try:
+                start = self._time_range_to_start(tr)
+                alerts_result = await self._indexer_client.get_alerts(limit=500, timestamp_start=start)
+                alerts = alerts_result.get("data", {}).get("affected_items", [])
+                level_dist: Dict[str, int] = {}
+                for a in alerts:
+                    lvl = a.get("rule", {}).get("level", 0)
+                    bucket = "critical" if lvl >= 12 else "high" if lvl >= 10 else "medium" if lvl >= 7 else "low"
+                    level_dist[bucket] = level_dist.get(bucket, 0) + 1
+                report["sections"]["alerts"] = {
+                    "total": len(alerts),
+                    "by_severity": level_dist,
+                    "time_range": tr,
+                }
+            except Exception as e:
+                report["sections"]["alerts"] = {"error": str(e)}
+
+        # Section 4: Vulnerability summary (all report types)
         if self._indexer_client:
             try:
                 vuln_summary = await self._indexer_client.get_vulnerability_summary()
                 report["sections"]["vulnerabilities"] = vuln_summary.get("data", {})
             except Exception as e:
                 report["sections"]["vulnerabilities"] = {"error": str(e)}
+
+        # Section 5: Top threats (daily, weekly, monthly, incident)
+        if self._indexer_client:
+            try:
+                threats = await self.get_top_security_threats(limit=5, time_range=tr)
+                report["sections"]["top_threats"] = threats.get("data", {}).get("threats", [])
+            except Exception:
+                report["sections"]["top_threats"] = []
+
+        # Section 6: SCA compliance summary (weekly, monthly)
+        if report_type in ("weekly", "monthly"):
+            try:
+                agents_result = await self._request(
+                    "GET", "/agents", params={"status": "active", "limit": 5, "select": "id,name"}
+                )
+                agent_list = agents_result.get("data", {}).get("affected_items", [])
+                sca_scores = []
+                for ag in agent_list[:3]:
+                    try:
+                        sca = await self._request("GET", f"/sca/{ag.get('id')}")
+                        sca_items = sca.get("data", {}).get("affected_items", [])
+                        scores = [p.get("score", 0) for p in sca_items if isinstance(p.get("score"), (int, float))]
+                        avg = int(sum(scores) / len(scores)) if scores else 0
+                        sca_scores.append({"agent_id": ag.get("id"), "agent_name": ag.get("name"), "avg_score": avg})
+                    except Exception:
+                        pass
+                report["sections"]["compliance_summary"] = {"agents_sampled": len(sca_scores), "scores": sca_scores}
+            except Exception:
+                pass
+
+        # Section 7: Recommendations (when include_recommendations=True)
+        if include_recommendations:
+            recommendations = []
+            alerts_section = report["sections"].get("alerts", {})
+            critical_count = alerts_section.get("by_severity", {}).get("critical", 0)
+            if critical_count > 0:
+                recommendations.append({
+                    "priority": "critical",
+                    "action": f"Investigate {critical_count} critical-severity alerts immediately",
+                })
+            vuln_section = report["sections"].get("vulnerabilities", {})
+            critical_vulns = vuln_section.get("critical", 0)
+            if critical_vulns > 0:
+                recommendations.append({
+                    "priority": "critical",
+                    "action": f"Patch {critical_vulns} critical vulnerabilities",
+                })
+            agent_section = report["sections"].get("agents", {})
+            disconnected_count = agent_section.get("disconnected", 0)
+            if disconnected_count > 0:
+                recommendations.append({
+                    "priority": "high",
+                    "action": f"Investigate {disconnected_count} disconnected agents",
+                })
+            if not recommendations:
+                recommendations.append({"priority": "info", "action": "No critical issues detected. Maintain monitoring."})
+            report["sections"]["recommendations"] = recommendations
+
         return {"data": report}
 
     async def run_compliance_check(self, framework: str, agent_id: str = None) -> Dict[str, Any]:
-        """Run compliance check using Wazuh SCA data."""
+        """Run compliance check using Wazuh SCA data, filtered by framework relevance."""
+        # Map compliance frameworks to SCA policy name patterns
+        framework_policy_keywords: Dict[str, list] = {
+            "PCI-DSS": ["pci", "payment", "card"],
+            "HIPAA": ["hipaa", "health"],
+            "SOX": ["sox", "sarbanes"],
+            "GDPR": ["gdpr", "privacy", "data_protection"],
+            "NIST": ["nist", "800-53", "cybersecurity"],
+        }
+        keywords = framework_policy_keywords.get(framework, [])
+
         if agent_id:
             try:
-                return await self._request("GET", f"/sca/{agent_id}")
+                result = await self._request("GET", f"/sca/{agent_id}")
+                sca_items = result.get("data", {}).get("affected_items", [])
+                return self._format_compliance_result(framework, keywords, [{"agent_id": agent_id, "sca_items": sca_items}])
             except Exception as e:
                 raise ValueError(
                     f"SCA data unavailable for agent {agent_id}: {e}. "
                     "The /sca endpoint may not be supported on this agent or Wazuh version."
                 )
+
         agents_result = await self._request(
             "GET", "/agents", params={"status": "active", "limit": 10, "select": "id,name"}
         )
         agents = agents_result.get("data", {}).get("affected_items", [])
-        sca_results = []
+        agent_sca_data = []
         for agent in agents[:5]:
             aid = agent.get("id")
             try:
                 sca = await self._request("GET", f"/sca/{aid}")
-                sca_results.append({"agent_id": aid, "agent_name": agent.get("name"), "sca": sca.get("data", {})})
+                agent_sca_data.append({
+                    "agent_id": aid,
+                    "agent_name": agent.get("name"),
+                    "sca_items": sca.get("data", {}).get("affected_items", []),
+                })
             except Exception:
-                sca_results.append({"agent_id": aid, "agent_name": agent.get("name"), "sca": {"error": "unavailable"}})
-        return {"data": {"framework": framework, "agents_checked": len(sca_results), "results": sca_results}}
+                agent_sca_data.append({"agent_id": aid, "agent_name": agent.get("name"), "sca_items": []})
+
+        return self._format_compliance_result(framework, keywords, agent_sca_data)
+
+    @staticmethod
+    def _format_compliance_result(framework: str, keywords: list, agent_data: list) -> Dict[str, Any]:
+        """Format SCA results with framework-relevant filtering and summary scores."""
+        results = []
+        total_pass = 0
+        total_fail = 0
+        total_checks = 0
+
+        for agent in agent_data:
+            sca_items = agent.get("sca_items", [])
+            # Filter policies relevant to the framework (if keywords available)
+            if keywords:
+                relevant = [
+                    p for p in sca_items
+                    if any(kw in (p.get("policy_id", "") + " " + p.get("name", "")).lower() for kw in keywords)
+                ]
+                # If no framework-specific policies found, include all (generic CIS benchmarks apply broadly)
+                if not relevant:
+                    relevant = sca_items
+            else:
+                relevant = sca_items
+
+            agent_pass = sum(p.get("pass", 0) for p in relevant)
+            agent_fail = sum(p.get("fail", 0) for p in relevant)
+            agent_total = sum(p.get("total_checks", 0) for p in relevant)
+            agent_score = int(agent_pass / agent_total * 100) if agent_total > 0 else 0
+
+            total_pass += agent_pass
+            total_fail += agent_fail
+            total_checks += agent_total
+
+            results.append({
+                "agent_id": agent.get("agent_id"),
+                "agent_name": agent.get("agent_name"),
+                "score": agent_score,
+                "pass": agent_pass,
+                "fail": agent_fail,
+                "total_checks": agent_total,
+                "policies": [
+                    {
+                        "policy_id": p.get("policy_id"),
+                        "name": p.get("name"),
+                        "score": p.get("score"),
+                        "pass": p.get("pass"),
+                        "fail": p.get("fail"),
+                    }
+                    for p in relevant
+                ],
+            })
+
+        overall_score = int(total_pass / total_checks * 100) if total_checks > 0 else 0
+
+        return {
+            "data": {
+                "framework": framework,
+                "overall_score": overall_score,
+                "overall_status": "pass" if overall_score >= 70 else "fail",
+                "total_checks": total_checks,
+                "total_pass": total_pass,
+                "total_fail": total_fail,
+                "agents_checked": len(results),
+                "results": results,
+            }
+        }
 
     async def get_wazuh_statistics(self) -> Dict[str, Any]:
         """Get Wazuh statistics."""
