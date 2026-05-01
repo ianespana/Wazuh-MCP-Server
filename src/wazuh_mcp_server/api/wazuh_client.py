@@ -20,6 +20,123 @@ logger = logging.getLogger(__name__)
 # Time range to hours mapping for indexer-based queries
 _TIME_RANGE_HOURS = {"1h": 1, "6h": 6, "12h": 12, "1d": 24, "24h": 24, "7d": 168, "30d": 720}
 
+# ISO 27001:2022 Annex A control map — links each control to Wazuh data sources
+# data_source: "sca" | "alerts" | "vulnerabilities" | "agents" | "stats" | "none"
+_ISO27001_CONTROL_MAP: Dict[str, Dict] = {
+    "A.5.26": {
+        "title": "Response to information security incidents",
+        "domain": "A.5",
+        "data_source": "alerts",
+        "rule_groups": ["incident", "syslog"],
+        "sca_keywords": [],
+        "weight": 2,
+    },
+    "A.6.3": {
+        "title": "Information security awareness, education and training",
+        "domain": "A.6",
+        "data_source": "agents",
+        "rule_groups": [],
+        "sca_keywords": [],
+        "weight": 1,
+    },
+    "A.8.1": {
+        "title": "User endpoint devices",
+        "domain": "A.8",
+        "data_source": "sca",
+        "rule_groups": ["syscheck"],
+        "sca_keywords": ["cis", "workstation", "desktop", "endpoint", "windows", "linux"],
+        "weight": 3,
+    },
+    "A.8.2": {
+        "title": "Privileged access rights",
+        "domain": "A.8",
+        "data_source": "alerts",
+        "rule_groups": ["syscheck", "rootcheck", "sudo", "privilege_escalation"],
+        "sca_keywords": [],
+        "weight": 3,
+    },
+    "A.8.4": {
+        "title": "Access to source code",
+        "domain": "A.8",
+        "data_source": "alerts",
+        "rule_groups": ["syscheck", "fim"],
+        "sca_keywords": [],
+        "weight": 1,
+    },
+    "A.8.5": {
+        "title": "Secure authentication",
+        "domain": "A.8",
+        "data_source": "alerts",
+        "rule_groups": ["authentication_failed", "authentication_success", "multiple_authentication_failures"],
+        "sca_keywords": ["pam", "ssh", "authentication", "password"],
+        "weight": 3,
+    },
+    "A.8.7": {
+        "title": "Protection against malware",
+        "domain": "A.8",
+        "data_source": "alerts",
+        "rule_groups": ["malware", "virus", "rootcheck", "trojans"],
+        "sca_keywords": ["antivirus", "malware", "clamav"],
+        "weight": 3,
+    },
+    "A.8.8": {
+        "title": "Management of technical vulnerabilities",
+        "domain": "A.8",
+        "data_source": "vulnerabilities",
+        "rule_groups": [],
+        "sca_keywords": [],
+        "weight": 4,
+    },
+    "A.8.9": {
+        "title": "Configuration management",
+        "domain": "A.8",
+        "data_source": "sca",
+        "rule_groups": [],
+        "sca_keywords": ["cis", "hardening", "benchmark", "configuration"],
+        "weight": 3,
+    },
+    "A.8.12": {
+        "title": "Data leakage prevention",
+        "domain": "A.8",
+        "data_source": "alerts",
+        "rule_groups": ["syscheck", "fim", "data_exfiltration"],
+        "sca_keywords": [],
+        "weight": 2,
+    },
+    "A.8.15": {
+        "title": "Logging",
+        "domain": "A.8",
+        "data_source": "stats",
+        "rule_groups": [],
+        "sca_keywords": ["audit", "logging", "log", "auditd"],
+        "weight": 3,
+    },
+    "A.8.16": {
+        "title": "Monitoring activities",
+        "domain": "A.8",
+        "data_source": "alerts",
+        "rule_groups": [],
+        "sca_keywords": [],
+        "weight": 3,
+    },
+    "A.8.20": {
+        "title": "Networks security",
+        "domain": "A.8",
+        "data_source": "alerts",
+        "rule_groups": ["firewall", "network", "ids", "iptables"],
+        "sca_keywords": ["firewall", "iptables", "network", "nftables"],
+        "weight": 2,
+    },
+    "A.8.22": {
+        "title": "Segregation of networks",
+        "domain": "A.8",
+        "data_source": "agents",
+        "rule_groups": [],
+        "sca_keywords": [],
+        "weight": 1,
+    },
+}
+
 
 class WazuhClient:
     """Simplified Wazuh API client with rate limiting, circuit breaker, and retry logic."""
@@ -1097,6 +1214,7 @@ class WazuhClient:
             "SOX": ["sox", "sarbanes"],
             "GDPR": ["gdpr", "privacy", "data_protection"],
             "NIST": ["nist", "800-53", "cybersecurity"],
+            "ISO27001": ["iso", "27001", "cis", "hardening", "benchmark", "configuration"],
         }
         keywords = framework_policy_keywords.get(framework, [])
 
@@ -1192,6 +1310,498 @@ class WazuhClient:
                 "total_fail": total_fail,
                 "agents_checked": len(results),
                 "results": results,
+            }
+        }
+
+    # =========================================================================
+    # ISO 27001:2022 Compliance Tools
+    # =========================================================================
+
+    async def get_sca_policy_checks(self, agent_id: str, policy_id: str) -> Dict[str, Any]:
+        """Get individual SCA checks for a specific policy on an agent."""
+        result = await self._request("GET", f"/sca/{agent_id}/checks/{policy_id}")
+        checks = result.get("data", {}).get("affected_items", [])
+        passed = [c for c in checks if c.get("result") == "passed"]
+        failed = [c for c in checks if c.get("result") == "failed"]
+        not_applicable = [c for c in checks if c.get("result") == "not applicable"]
+        return {
+            "data": {
+                "agent_id": agent_id,
+                "policy_id": policy_id,
+                "total_checks": len(checks),
+                "passed": len(passed),
+                "failed": len(failed),
+                "not_applicable": len(not_applicable),
+                "score": int(len(passed) / len(checks) * 100) if checks else 0,
+                "failed_checks": [
+                    {
+                        "id": c.get("id"),
+                        "title": c.get("title"),
+                        "description": c.get("description"),
+                        "rationale": c.get("rationale"),
+                        "remediation": c.get("remediation"),
+                        "result": c.get("result"),
+                    }
+                    for c in failed[:50]
+                ],
+                "passed_checks": [
+                    {"id": c.get("id"), "title": c.get("title"), "result": c.get("result")}
+                    for c in passed[:50]
+                ],
+            }
+        }
+
+    async def get_iso27001_dashboard(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """Return an ISO 27001:2022 compliance dashboard aggregated from Wazuh data."""
+        # --- gather raw data concurrently ---
+        async def _safe(coro, default):
+            try:
+                return await coro
+            except Exception:
+                return default
+
+        agents_coro = self._request("GET", "/agents", params={"status": "active", "limit": 500, "select": "id,name,os.name"})
+        alerts_coro = self._request("GET", "/alerts", params={"limit": 500, "sort": "-timestamp"})
+        stats_coro = self._request("GET", "/manager/stats/analysisd")
+
+        agents_res, alerts_res, stats_res = await asyncio.gather(
+            _safe(agents_coro, {}),
+            _safe(alerts_coro, {}),
+            _safe(stats_coro, {}),
+        )
+
+        agents = agents_res.get("data", {}).get("affected_items", [])
+        alerts = alerts_res.get("data", {}).get("affected_items", [])
+
+        # SCA: fetch for up to 5 agents
+        sca_results = []
+        for ag in agents[:5]:
+            aid = ag.get("id")
+            try:
+                sca = await self._request("GET", f"/sca/{aid}")
+                sca_results.append({
+                    "agent_id": aid,
+                    "agent_name": ag.get("name"),
+                    "sca_items": sca.get("data", {}).get("affected_items", []),
+                })
+            except Exception:
+                sca_results.append({"agent_id": aid, "agent_name": ag.get("name"), "sca_items": []})
+
+        # Vulnerability summary (indexer if available, else skip)
+        vuln_summary: Dict[str, int] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        if self._indexer_client:
+            try:
+                target_id = agent_id or (agents[0].get("id") if agents else None)
+                if target_id:
+                    vuln_res = await self._indexer_client.get_vulnerabilities(agent_id=target_id, limit=500)
+                    for v in vuln_res.get("data", {}).get("affected_items", []):
+                        sev = (v.get("severity") or "").lower()
+                        if sev in vuln_summary:
+                            vuln_summary[sev] += 1
+            except Exception:
+                pass
+
+        # Build per-control evidence
+        alert_groups: Dict[str, int] = {}
+        for a in alerts:
+            for g in (a.get("rule", {}).get("groups") or []):
+                alert_groups[g] = alert_groups.get(g, 0) + 1
+
+        control_statuses = []
+        domain_scores: Dict[str, list] = {"A.5": [], "A.6": [], "A.7": [], "A.8": []}
+
+        for ctrl_id, ctrl in _ISO27001_CONTROL_MAP.items():
+            source = ctrl["data_source"]
+            score: Optional[int] = None
+            evidence_count = 0
+            status = "no_data"
+
+            if source == "sca":
+                kws = ctrl["sca_keywords"]
+                total_p, total_f, total_c = 0, 0, 0
+                for sr in sca_results:
+                    for item in sr["sca_items"]:
+                        name_lower = (item.get("policy_id", "") + " " + item.get("name", "")).lower()
+                        if not kws or any(kw in name_lower for kw in kws):
+                            total_p += item.get("pass", 0)
+                            total_f += item.get("fail", 0)
+                            total_c += item.get("total_checks", 0)
+                if total_c > 0:
+                    score = int(total_p / total_c * 100)
+                    evidence_count = total_c
+                    status = "pass" if score >= 70 else "fail"
+
+            elif source == "alerts":
+                groups = ctrl["rule_groups"]
+                if groups:
+                    cnt = sum(alert_groups.get(g, 0) for g in groups)
+                else:
+                    cnt = len(alerts)
+                evidence_count = cnt
+                # Having alerts means monitoring is active — score based on coverage
+                score = min(100, cnt * 5) if cnt > 0 else 0
+                status = "active" if cnt > 0 else "no_data"
+
+            elif source == "vulnerabilities":
+                total_vulns = sum(vuln_summary.values())
+                critical = vuln_summary.get("critical", 0)
+                evidence_count = total_vulns
+                if total_vulns == 0 and not self._indexer_client:
+                    status = "no_data"
+                    score = None
+                else:
+                    score = max(0, 100 - critical * 10 - vuln_summary.get("high", 0) * 3)
+                    status = "pass" if score >= 70 else "fail"
+
+            elif source == "agents":
+                evidence_count = len(agents)
+                score = min(100, len(agents) * 10) if agents else 0
+                status = "active" if agents else "no_data"
+
+            elif source == "stats":
+                analysisd = stats_res.get("data", {}) if stats_res else {}
+                events = analysisd.get("total_events_decoded", analysisd.get("events_decoded", 0))
+                evidence_count = events if isinstance(events, int) else 0
+                score = 100 if evidence_count > 0 else 0
+                status = "active" if evidence_count > 0 else "no_data"
+
+            domain = ctrl["domain"]
+            if score is not None:
+                domain_scores[domain].append(score)
+
+            control_statuses.append({
+                "control_id": ctrl_id,
+                "title": ctrl["title"],
+                "domain": domain,
+                "data_source": source,
+                "status": status,
+                "score": score,
+                "evidence_count": evidence_count,
+            })
+
+        # Compute domain-level scores
+        domain_summary = {}
+        for domain, scores in domain_scores.items():
+            domain_names = {"A.5": "Organizational", "A.6": "People", "A.7": "Physical", "A.8": "Technological"}
+            domain_summary[domain] = {
+                "name": domain_names.get(domain, domain),
+                "score": int(sum(scores) / len(scores)) if scores else None,
+                "controls_measured": len(scores),
+            }
+
+        all_scores = [c["score"] for c in control_statuses if c["score"] is not None]
+        overall_score = int(sum(all_scores) / len(all_scores)) if all_scores else None
+
+        failing = [c for c in control_statuses if c["status"] == "fail"]
+        no_data = [c for c in control_statuses if c["status"] == "no_data"]
+
+        return {
+            "data": {
+                "framework": "ISO27001:2022",
+                "overall_score": overall_score,
+                "overall_status": "pass" if (overall_score or 0) >= 70 else "fail",
+                "active_agents": len(agents),
+                "vulnerability_summary": vuln_summary,
+                "domain_summary": domain_summary,
+                "controls": control_statuses,
+                "failing_controls": [c["control_id"] for c in failing],
+                "no_data_controls": [c["control_id"] for c in no_data],
+            }
+        }
+
+    async def get_iso27001_control_detail(
+        self, control_id: str, agent_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return detailed Wazuh evidence for a specific ISO 27001 Annex A control."""
+        # Handle domain-level queries (e.g. "A.8" → all A.8.x controls)
+        if control_id in ("A.5", "A.6", "A.7", "A.8"):
+            controls_in_domain = {k: v for k, v in _ISO27001_CONTROL_MAP.items() if v["domain"] == control_id}
+        else:
+            if control_id not in _ISO27001_CONTROL_MAP:
+                return {"error": f"Control '{control_id}' not found in ISO 27001 map"}
+            controls_in_domain = {control_id: _ISO27001_CONTROL_MAP[control_id]}
+
+        evidence_blocks = []
+        for ctrl_id, ctrl in controls_in_domain.items():
+            block: Dict[str, Any] = {
+                "control_id": ctrl_id,
+                "title": ctrl["title"],
+                "data_source": ctrl["data_source"],
+                "evidence": {},
+            }
+            source = ctrl["data_source"]
+            try:
+                if source == "sca":
+                    target = agent_id
+                    if not target:
+                        agents_res = await self._request("GET", "/agents", params={"status": "active", "limit": 1, "select": "id"})
+                        items = agents_res.get("data", {}).get("affected_items", [])
+                        target = items[0].get("id") if items else None
+                    if target:
+                        sca_res = await self._request("GET", f"/sca/{target}")
+                        sca_items = sca_res.get("data", {}).get("affected_items", [])
+                        kws = ctrl["sca_keywords"]
+                        relevant = [p for p in sca_items if not kws or any(
+                            kw in (p.get("policy_id", "") + " " + p.get("name", "")).lower() for kw in kws
+                        )] or sca_items
+                        block["evidence"] = {
+                            "agent_id": target,
+                            "policies": [
+                                {
+                                    "policy_id": p.get("policy_id"),
+                                    "name": p.get("name"),
+                                    "score": p.get("score"),
+                                    "pass": p.get("pass"),
+                                    "fail": p.get("fail"),
+                                    "total_checks": p.get("total_checks"),
+                                }
+                                for p in relevant[:10]
+                            ],
+                        }
+
+                elif source == "alerts":
+                    params: Dict[str, Any] = {"limit": 100, "sort": "-timestamp"}
+                    groups = ctrl["rule_groups"]
+                    if groups:
+                        params["q"] = " OR ".join(f"rule.groups~{g}" for g in groups)
+                    if agent_id:
+                        params["q"] = (params.get("q", "") + f" AND agent.id={agent_id}").lstrip(" AND ")
+                    alerts_res = await self._request("GET", "/alerts", params=params)
+                    alert_items = alerts_res.get("data", {}).get("affected_items", [])
+                    block["evidence"] = {
+                        "alert_count": len(alert_items),
+                        "rule_groups_searched": groups,
+                        "recent_alerts": [
+                            {
+                                "id": a.get("id"),
+                                "timestamp": a.get("timestamp"),
+                                "rule_id": a.get("rule", {}).get("id"),
+                                "rule_description": a.get("rule", {}).get("description"),
+                                "level": a.get("rule", {}).get("level"),
+                                "agent": a.get("agent", {}).get("name"),
+                            }
+                            for a in alert_items[:20]
+                        ],
+                    }
+
+                elif source == "vulnerabilities":
+                    if self._indexer_client:
+                        target = agent_id
+                        if not target:
+                            agents_res = await self._request("GET", "/agents", params={"status": "active", "limit": 1, "select": "id"})
+                            items = agents_res.get("data", {}).get("affected_items", [])
+                            target = items[0].get("id") if items else None
+                        if target:
+                            vuln_res = await self._indexer_client.get_vulnerabilities(agent_id=target, limit=200)
+                            vulns = vuln_res.get("data", {}).get("affected_items", [])
+                            by_sev: Dict[str, int] = {}
+                            for v in vulns:
+                                sev = (v.get("severity") or "unknown").lower()
+                                by_sev[sev] = by_sev.get(sev, 0) + 1
+                            block["evidence"] = {
+                                "agent_id": target,
+                                "total_vulnerabilities": len(vulns),
+                                "by_severity": by_sev,
+                                "critical_vulnerabilities": [
+                                    {
+                                        "cve": v.get("cve"),
+                                        "name": v.get("name"),
+                                        "severity": v.get("severity"),
+                                        "version": v.get("version"),
+                                    }
+                                    for v in vulns if (v.get("severity") or "").lower() == "critical"
+                                ][:20],
+                            }
+                    else:
+                        block["evidence"] = {"note": "Wazuh Indexer not configured — vulnerability data unavailable"}
+
+                elif source == "agents":
+                    params = {"status": "active", "limit": 100, "select": "id,name,status,os.name,lastKeepAlive"}
+                    if agent_id:
+                        params["agents_list"] = agent_id
+                    agents_res = await self._request("GET", "/agents", params=params)
+                    agent_items = agents_res.get("data", {}).get("affected_items", [])
+                    block["evidence"] = {
+                        "active_agents": len(agent_items),
+                        "agents": [
+                            {
+                                "id": a.get("id"),
+                                "name": a.get("name"),
+                                "os": a.get("os", {}).get("name"),
+                                "last_seen": a.get("lastKeepAlive"),
+                            }
+                            for a in agent_items[:20]
+                        ],
+                    }
+
+                elif source == "stats":
+                    stats_res = await self._request("GET", "/manager/stats/analysisd")
+                    block["evidence"] = {"analysisd_stats": stats_res.get("data", {})}
+
+            except Exception as e:
+                block["evidence"] = {"error": str(e)}
+
+            evidence_blocks.append(block)
+
+        return {
+            "data": {
+                "queried_control": control_id,
+                "framework": "ISO27001:2022",
+                "controls": evidence_blocks,
+            }
+        }
+
+    async def get_iso27001_gap_analysis(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """Identify ISO 27001 controls with gaps — failing SCA, critical vulns, or no evidence."""
+        dashboard = await self.get_iso27001_dashboard(agent_id=agent_id)
+        controls = dashboard.get("data", {}).get("controls", [])
+
+        gaps = []
+        for c in controls:
+            ctrl_id = c["control_id"]
+            ctrl_meta = _ISO27001_CONTROL_MAP.get(ctrl_id, {})
+            status = c["status"]
+            score = c["score"]
+
+            if status == "no_data":
+                gaps.append({
+                    "control_id": ctrl_id,
+                    "title": ctrl_meta.get("title", ""),
+                    "domain": c["domain"],
+                    "gap_type": "no_evidence",
+                    "severity": "high",
+                    "score": None,
+                    "recommendation": (
+                        f"No Wazuh data available for this control. "
+                        f"Data source expected: {ctrl_meta.get('data_source', 'unknown')}. "
+                        "Ensure the relevant Wazuh module is enabled (e.g. SCA, vulnerability scanner, FIM)."
+                    ),
+                })
+            elif status == "fail" and score is not None:
+                gaps.append({
+                    "control_id": ctrl_id,
+                    "title": ctrl_meta.get("title", ""),
+                    "domain": c["domain"],
+                    "gap_type": "failing_checks",
+                    "severity": "critical" if score < 40 else "medium",
+                    "score": score,
+                    "recommendation": self._iso27001_remediation_hint(ctrl_id, score),
+                })
+
+        gaps.sort(key=lambda g: {"critical": 0, "high": 1, "medium": 2}.get(g["severity"], 3))
+
+        domain_gap_counts: Dict[str, int] = {}
+        for g in gaps:
+            d = g["domain"]
+            domain_gap_counts[d] = domain_gap_counts.get(d, 0) + 1
+
+        return {
+            "data": {
+                "framework": "ISO27001:2022",
+                "total_gaps": len(gaps),
+                "gaps_by_domain": domain_gap_counts,
+                "gaps": gaps,
+                "summary": (
+                    f"{len(gaps)} gap(s) identified across ISO 27001:2022 Annex A controls. "
+                    f"Critical: {sum(1 for g in gaps if g['severity'] == 'critical')}, "
+                    f"High: {sum(1 for g in gaps if g['severity'] == 'high')}, "
+                    f"Medium: {sum(1 for g in gaps if g['severity'] == 'medium')}."
+                ),
+            }
+        }
+
+    @staticmethod
+    def _iso27001_remediation_hint(control_id: str, score: int) -> str:
+        """Return a human-readable remediation hint for a failing ISO 27001 control."""
+        hints = {
+            "A.8.1": "Review SCA policy results for endpoint devices. Apply CIS benchmark hardening to workstations and servers.",
+            "A.8.2": "Audit privileged account usage. Review sudo/rootcheck alerts and restrict unnecessary privilege grants.",
+            "A.8.4": "Enable File Integrity Monitoring (FIM) on source code directories. Investigate recent syscheck alerts.",
+            "A.8.5": "Investigate authentication failure alerts. Enforce MFA, review SSH key policies, and check PAM configuration.",
+            "A.8.7": "Review malware/rootcheck alerts. Ensure antivirus definitions are current and rootkit checks are enabled.",
+            "A.8.8": "Patch critical and high-severity vulnerabilities. Prioritize CVEs with public exploits.",
+            "A.8.9": "Improve SCA scores by applying CIS benchmark recommendations. Review failing checks in detail.",
+            "A.8.12": "Investigate FIM alerts for unexpected file changes. Review data access controls and DLP policies.",
+            "A.8.15": "Verify log collection is active on all agents. Check analysisd stats and ensure log retention policies are in place.",
+            "A.8.16": "Increase alert monitoring coverage. Ensure SIEM rules are tuned and critical rules are active.",
+            "A.8.20": "Review firewall rules and network alert patterns. Tighten ingress/egress controls.",
+            "A.8.22": "Verify network segmentation is in place. Check agent port exposure and review firewall policies.",
+            "A.5.26": "Define and test an incident response procedure. Ensure Wazuh active response is configured.",
+            "A.6.3": "Ensure all endpoints have active Wazuh agents. Disconnected agents indicate gaps in monitoring coverage.",
+        }
+        hint = hints.get(control_id, "Review Wazuh data for this control and apply relevant hardening measures.")
+        return f"Score: {score}%. {hint}"
+
+    async def get_iso27001_alerts(
+        self, time_range: str = "24h", agent_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get recent alerts mapped to ISO 27001:2022 Annex A control domains."""
+        hours = _TIME_RANGE_HOURS.get(time_range, 24)
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        params: Dict[str, Any] = {"limit": 500, "sort": "-timestamp", "q": f"timestamp>{since}"}
+        if agent_id:
+            params["q"] += f";agent.id={agent_id}"
+
+        try:
+            result = await self._request("GET", "/alerts", params=params)
+        except Exception as e:
+            return {"error": f"Failed to fetch alerts: {e}"}
+
+        alerts = result.get("data", {}).get("affected_items", [])
+
+        # Build group → alert count index
+        alert_group_counts: Dict[str, int] = {}
+        for a in alerts:
+            for g in (a.get("rule", {}).get("groups") or []):
+                alert_group_counts[g] = alert_group_counts.get(g, 0) + 1
+
+        # Map alerts to ISO 27001 controls
+        control_alert_map: Dict[str, Dict] = {}
+        for ctrl_id, ctrl in _ISO27001_CONTROL_MAP.items():
+            if ctrl["data_source"] != "alerts":
+                continue
+            groups = ctrl["rule_groups"]
+            if groups:
+                count = sum(alert_group_counts.get(g, 0) for g in groups)
+            else:
+                count = len(alerts)
+
+            # Collect sample alerts for this control
+            if groups:
+                samples = [
+                    a for a in alerts
+                    if any(g in (a.get("rule", {}).get("groups") or []) for g in groups)
+                ][:10]
+            else:
+                samples = alerts[:10]
+
+            control_alert_map[ctrl_id] = {
+                "control_id": ctrl_id,
+                "title": ctrl["title"],
+                "domain": ctrl["domain"],
+                "alert_count": count,
+                "sample_alerts": [
+                    {
+                        "timestamp": a.get("timestamp"),
+                        "rule_id": a.get("rule", {}).get("id"),
+                        "description": a.get("rule", {}).get("description"),
+                        "level": a.get("rule", {}).get("level"),
+                        "agent": a.get("agent", {}).get("name"),
+                    }
+                    for a in samples
+                ],
+            }
+
+        # Sort by alert count descending
+        sorted_controls = sorted(control_alert_map.values(), key=lambda x: x["alert_count"], reverse=True)
+
+        return {
+            "data": {
+                "framework": "ISO27001:2022",
+                "time_range": time_range,
+                "total_alerts_fetched": len(alerts),
+                "controls_with_alerts": [c for c in sorted_controls if c["alert_count"] > 0],
+                "controls_without_alerts": [c["control_id"] for c in sorted_controls if c["alert_count"] == 0],
             }
         }
 

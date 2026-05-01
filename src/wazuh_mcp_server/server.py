@@ -50,6 +50,7 @@ from wazuh_mcp_server.security import (
     validate_report_type,
     validate_rule_id,
     validate_severity,
+    validate_iso27001_control,
     validate_time_range,
     validate_timestamp,
     validate_username,
@@ -990,6 +991,30 @@ async def handle_prompts_list(params: Dict[str, Any], session: MCPSession) -> Di
                 {"name": "agent_id", "description": "Specific agent to assess (optional)", "required": False},
             ],
         },
+        {
+            "name": "iso27001_assessment",
+            "description": (
+                "Guided ISO 27001:2022 compliance assessment. Walks through dashboard overview, "
+                "domain drill-down, gap analysis, and recommendations using live Wazuh data."
+            ),
+            "arguments": [
+                {
+                    "name": "scope",
+                    "description": "Assessment scope: 'full' (all domains), 'technological' (A.8 only), or 'specific_control' (single control)",
+                    "required": False,
+                },
+                {
+                    "name": "control_id",
+                    "description": "Specific control to assess when scope='specific_control' (e.g. 'A.8.8')",
+                    "required": False,
+                },
+                {
+                    "name": "agent_id",
+                    "description": "Scope assessment to a specific Wazuh agent (optional)",
+                    "required": False,
+                },
+            ],
+        },
     ]
 
     # Simple pagination (no cursor means start from beginning)
@@ -1084,6 +1109,52 @@ async def handle_prompts_get(params: Dict[str, Any], session: MCPSession) -> Dic
                 }
             ],
         },
+    }
+
+    scope = arguments.get("scope", "full")
+    control_id = arguments.get("control_id", "A.8")
+    agent_id_arg = arguments.get("agent_id", "all agents")
+
+    prompt_templates["iso27001_assessment"] = {
+        "description": "ISO 27001:2022 guided compliance assessment",
+        "messages": [
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": (
+                        f"Perform an ISO 27001:2022 compliance assessment. "
+                        f"Scope: {scope}. "
+                        f"{'Control: ' + control_id + '. ' if scope == 'specific_control' else ''}"
+                        f"Agent scope: {agent_id_arg}.\n\n"
+                        f"Follow this workflow:\n"
+                        + (
+                            "1. Use get_iso27001_dashboard to get the overall compliance posture across all Annex A domains.\n"
+                            "2. For each domain with a score below 70 or marked 'no_data', use get_iso27001_control_detail to investigate.\n"
+                            "3. For any failing SCA policies found, use get_sca_policy_checks to get check-level detail and remediation steps.\n"
+                            "4. Use get_iso27001_alerts with time_range='24h' to see which controls have active security events.\n"
+                            "5. Use get_iso27001_gap_analysis to get a prioritised list of gaps with remediation hints.\n"
+                            "6. Summarise findings by domain (A.5/A.6/A.7/A.8), highlight critical gaps, and provide actionable recommendations.\n"
+                            if scope == "full"
+                            else (
+                                "1. Use get_iso27001_control_detail with control_id='A.8' to assess all Technological controls.\n"
+                                "2. For failing SCA policies, use get_sca_policy_checks to drill into individual checks.\n"
+                                "3. Use get_iso27001_alerts with time_range='24h' to see alert activity for A.8 controls.\n"
+                                "4. Use get_iso27001_gap_analysis to identify the highest-priority gaps in A.8.\n"
+                                "5. Provide remediation recommendations prioritised by risk.\n"
+                                if scope == "technological"
+                                else (
+                                    f"1. Use get_iso27001_control_detail with control_id='{control_id}' to get all Wazuh evidence.\n"
+                                    "2. If the control uses SCA data, use get_sca_policy_checks to get check-level detail.\n"
+                                    "3. Use get_iso27001_alerts to see recent alert activity relevant to this control.\n"
+                                    "4. Provide a focused assessment of compliance status and specific remediation steps.\n"
+                                )
+                            )
+                        )
+                    ),
+                },
+            }
+        ],
     }
 
     if name not in prompt_templates:
@@ -1549,12 +1620,126 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
                 "properties": {
                     "framework": {
                         "type": "string",
-                        "enum": ["PCI-DSS", "HIPAA", "SOX", "GDPR", "NIST"],
+                        "enum": ["PCI-DSS", "HIPAA", "SOX", "GDPR", "NIST", "ISO27001"],
                         "default": "PCI-DSS",
                     },
                     "agent_id": {
                         "type": "string",
                         "description": "Specific agent ID to check (if None, check entire environment)",
+                    },
+                },
+                "required": [],
+            },
+        },
+        # ISO 27001:2022 Tools
+        {
+            "name": "get_iso27001_dashboard",
+            "description": (
+                "ISO 27001:2022 compliance dashboard. Returns scores per Annex A domain "
+                "(A.5 Organizational, A.6 People, A.7 Physical, A.8 Technological), "
+                "overall posture, failing controls, and data drawn from SCA, alerts, "
+                "vulnerabilities, and agent status."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Scope dashboard to a specific agent (optional — defaults to environment-wide)",
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "get_iso27001_control_detail",
+            "description": (
+                "Drill into a specific ISO 27001:2022 Annex A control or domain. "
+                "Returns Wazuh evidence (SCA policy scores, alert counts, vulnerability data, "
+                "or agent coverage) for the requested control. "
+                "Examples: 'A.8.8' (technical vulnerabilities), 'A.8.5' (authentication), "
+                "'A.8' (all Technological controls), 'A.5' (all Organizational controls)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "control_id": {
+                        "type": "string",
+                        "description": (
+                            "ISO 27001 control ID or domain. "
+                            "Domains: A.5, A.6, A.7, A.8. "
+                            "Controls: A.5.26, A.6.3, A.8.1, A.8.2, A.8.4, A.8.5, "
+                            "A.8.7, A.8.8, A.8.9, A.8.12, A.8.15, A.8.16, A.8.20, A.8.22"
+                        ),
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Scope to a specific agent (optional)",
+                    },
+                },
+                "required": ["control_id"],
+            },
+        },
+        {
+            "name": "get_sca_policy_checks",
+            "description": (
+                "Get individual check-level detail for a specific SCA policy on a Wazuh agent. "
+                "Returns each check with pass/fail status, description, rationale, and remediation steps. "
+                "Use after get_iso27001_dashboard or get_iso27001_control_detail to drill into SCA findings."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Wazuh agent ID (e.g. '001')",
+                    },
+                    "policy_id": {
+                        "type": "string",
+                        "description": "SCA policy ID (e.g. 'cis_debian10', 'cis_win2019'). "
+                                       "Obtain from get_iso27001_control_detail or run_compliance_check.",
+                    },
+                },
+                "required": ["agent_id", "policy_id"],
+            },
+        },
+        {
+            "name": "get_iso27001_gap_analysis",
+            "description": (
+                "Identify ISO 27001:2022 Annex A controls with gaps — failing SCA scores, "
+                "critical vulnerabilities, or controls with no Wazuh evidence. "
+                "Returns a prioritised gap list (critical/high/medium) with remediation hints."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Scope gap analysis to a specific agent (optional)",
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "get_iso27001_alerts",
+            "description": (
+                "Get recent Wazuh alerts mapped to ISO 27001:2022 Annex A control domains. "
+                "Shows which controls are generating security events, with sample alerts per control. "
+                "Useful for understanding which ISO 27001 areas have active security activity."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["1h", "6h", "12h", "24h", "7d", "30d"],
+                        "default": "24h",
+                        "description": "Time window for alert retrieval",
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Scope to a specific agent (optional)",
                     },
                 },
                 "required": [],
@@ -2135,6 +2320,40 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
             result = await wazuh_client.run_compliance_check(framework, agent_id)
             _success = True
             return _tool_result(f"Compliance Check:\n{json.dumps(result, indent=2, default=str)}")
+
+        # ISO 27001:2022 Tools
+        elif tool_name == "get_iso27001_dashboard":
+            agent_id = validate_agent_id(arguments.get("agent_id"))
+            result = await wazuh_client.get_iso27001_dashboard(agent_id=agent_id)
+            _success = True
+            return _tool_result(f"ISO 27001 Dashboard:\n{json.dumps(result, indent=2, default=str)}")
+
+        elif tool_name == "get_iso27001_control_detail":
+            control_id = validate_iso27001_control(arguments.get("control_id"), required=True)
+            agent_id = validate_agent_id(arguments.get("agent_id"))
+            result = await wazuh_client.get_iso27001_control_detail(control_id, agent_id=agent_id)
+            _success = True
+            return _tool_result(f"ISO 27001 Control Detail [{control_id}]:\n{json.dumps(result, indent=2, default=str)}")
+
+        elif tool_name == "get_sca_policy_checks":
+            agent_id = validate_agent_id(arguments.get("agent_id"), required=True)
+            policy_id = validate_input(arguments.get("policy_id"), "policy_id", required=True)
+            result = await wazuh_client.get_sca_policy_checks(agent_id, policy_id)
+            _success = True
+            return _tool_result(f"SCA Policy Checks [{policy_id}]:\n{json.dumps(result, indent=2, default=str)}")
+
+        elif tool_name == "get_iso27001_gap_analysis":
+            agent_id = validate_agent_id(arguments.get("agent_id"))
+            result = await wazuh_client.get_iso27001_gap_analysis(agent_id=agent_id)
+            _success = True
+            return _tool_result(f"ISO 27001 Gap Analysis:\n{json.dumps(result, indent=2, default=str)}")
+
+        elif tool_name == "get_iso27001_alerts":
+            time_range = validate_time_range(arguments.get("time_range", "24h"))
+            agent_id = validate_agent_id(arguments.get("agent_id"))
+            result = await wazuh_client.get_iso27001_alerts(time_range=time_range, agent_id=agent_id)
+            _success = True
+            return _tool_result(f"ISO 27001 Alerts:\n{json.dumps(result, indent=2, default=str)}")
 
         # System Monitoring Tools
         elif tool_name == "get_wazuh_statistics":
