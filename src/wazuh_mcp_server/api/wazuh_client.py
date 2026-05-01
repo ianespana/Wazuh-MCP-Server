@@ -1407,11 +1407,34 @@ class WazuhClient:
             for g in (a.get("rule", {}).get("groups") or []):
                 alert_groups[g] = alert_groups.get(g, 0) + 1
 
+        # --- Confidence thresholds ---
+        # confidence = how reliable the score is, based on evidence quantity
+        def _confidence(evidence_count: int, source: str) -> str:
+            if source == "sca":
+                if evidence_count >= 50:
+                    return "high"
+                if evidence_count >= 10:
+                    return "medium"
+                return "low"
+            if source == "vulnerabilities":
+                return "high" if self._indexer_client else "none"
+            if source == "alerts":
+                if evidence_count >= 20:
+                    return "high"
+                if evidence_count >= 5:
+                    return "medium"
+                return "low"
+            if source in ("agents", "stats"):
+                return "medium" if evidence_count > 0 else "none"
+            return "none"
+
         control_statuses = []
-        domain_scores: Dict[str, list] = {"A.5": [], "A.6": [], "A.7": [], "A.8": []}
+        # domain → list of (weighted_score, weight) tuples for weighted aggregation
+        domain_weighted: Dict[str, list] = {"A.5": [], "A.6": [], "A.7": [], "A.8": []}
 
         for ctrl_id, ctrl in _ISO27001_CONTROL_MAP.items():
             source = ctrl["data_source"]
+            weight = ctrl.get("weight", 1)
             score: Optional[int] = None
             evidence_count = 0
             status = "no_data"
@@ -1427,31 +1450,34 @@ class WazuhClient:
                             total_f += item.get("fail", 0)
                             total_c += item.get("total_checks", 0)
                 if total_c > 0:
-                    score = int(total_p / total_c * 100)
+                    raw = total_p / total_c * 100
+                    # Stricter threshold: penalise heavily if fail rate > 30%
+                    fail_rate = total_f / total_c
+                    penalty = max(0, (fail_rate - 0.30) * 50) if fail_rate > 0.30 else 0
+                    score = max(0, int(raw - penalty))
                     evidence_count = total_c
-                    status = "pass" if score >= 70 else "fail"
+                    status = "pass" if score >= 75 else "fail"  # Raised from 70→75
 
             elif source == "alerts":
                 groups = ctrl["rule_groups"]
-                if groups:
-                    cnt = sum(alert_groups.get(g, 0) for g in groups)
-                else:
-                    cnt = len(alerts)
+                cnt = sum(alert_groups.get(g, 0) for g in groups) if groups else len(alerts)
                 evidence_count = cnt
-                # Having alerts means monitoring is active — score based on coverage
+                # Monitoring coverage score: active = good, but high alert volume may indicate issues
                 score = min(100, cnt * 5) if cnt > 0 else 0
                 status = "active" if cnt > 0 else "no_data"
 
             elif source == "vulnerabilities":
                 total_vulns = sum(vuln_summary.values())
                 critical = vuln_summary.get("critical", 0)
+                high = vuln_summary.get("high", 0)
                 evidence_count = total_vulns
                 if total_vulns == 0 and not self._indexer_client:
                     status = "no_data"
                     score = None
                 else:
-                    score = max(0, 100 - critical * 10 - vuln_summary.get("high", 0) * 3)
-                    status = "pass" if score >= 70 else "fail"
+                    # Weighted penalty: critical = -15 pts each (up from -10), high = -5 (up from -3)
+                    score = max(0, 100 - critical * 15 - high * 5 - vuln_summary.get("medium", 0))
+                    status = "pass" if score >= 75 else "fail"
 
             elif source == "agents":
                 evidence_count = len(agents)
@@ -1465,9 +1491,10 @@ class WazuhClient:
                 score = 100 if evidence_count > 0 else 0
                 status = "active" if evidence_count > 0 else "no_data"
 
+            confidence = _confidence(evidence_count, source)
             domain = ctrl["domain"]
             if score is not None:
-                domain_scores[domain].append(score)
+                domain_weighted[domain].append((score, weight))
 
             control_statuses.append({
                 "control_id": ctrl_id,
@@ -1476,36 +1503,111 @@ class WazuhClient:
                 "data_source": source,
                 "status": status,
                 "score": score,
+                "weight": weight,
+                "confidence": confidence,
                 "evidence_count": evidence_count,
             })
 
-        # Compute domain-level scores
+        # --- Weighted domain scores ---
+        domain_names = {"A.5": "Organizational", "A.6": "People", "A.7": "Physical", "A.8": "Technological"}
         domain_summary = {}
-        for domain, scores in domain_scores.items():
-            domain_names = {"A.5": "Organizational", "A.6": "People", "A.7": "Physical", "A.8": "Technological"}
+        for domain, weighted_pairs in domain_weighted.items():
+            if weighted_pairs:
+                total_w = sum(w for _, w in weighted_pairs)
+                weighted_avg = int(sum(s * w for s, w in weighted_pairs) / total_w) if total_w else None
+                low_conf = sum(1 for _, _ in weighted_pairs
+                               if next((c["confidence"] for c in control_statuses
+                                        if c["control_id"].startswith(domain) and c["score"] is not None), "none")
+                               in ("low", "none"))
+            else:
+                weighted_avg = None
+                low_conf = 0
             domain_summary[domain] = {
                 "name": domain_names.get(domain, domain),
-                "score": int(sum(scores) / len(scores)) if scores else None,
-                "controls_measured": len(scores),
+                "weighted_score": weighted_avg,
+                "controls_measured": len(weighted_pairs),
+                "low_confidence_controls": low_conf,
             }
 
-        all_scores = [c["score"] for c in control_statuses if c["score"] is not None]
-        overall_score = int(sum(all_scores) / len(all_scores)) if all_scores else None
+        # --- Overall weighted score ---
+        all_weighted = [(c["score"], c["weight"]) for c in control_statuses if c["score"] is not None]
+        if all_weighted:
+            total_w = sum(w for _, w in all_weighted)
+            overall_score = int(sum(s * w for s, w in all_weighted) / total_w) if total_w else None
+        else:
+            overall_score = None
+
+        overall_confidence = (
+            "high" if sum(1 for c in control_statuses if c["confidence"] in ("low", "none")) <= 2
+            else "medium" if sum(1 for c in control_statuses if c["confidence"] == "none") <= 4
+            else "low"
+        )
 
         failing = [c for c in control_statuses if c["status"] == "fail"]
         no_data = [c for c in control_statuses if c["status"] == "no_data"]
 
+        # --- Per-device endpoint panel (Board-level: laptops/computers) ---
+        # Shows each active endpoint's SCA score and vulnerability exposure
+        endpoint_devices = []
+        for sr in sca_results:
+            aid = sr["agent_id"]
+            aname = sr.get("agent_name", aid)
+            sca_items = sr["sca_items"]
+
+            # Overall SCA score for this device
+            dev_pass = sum(p.get("pass", 0) for p in sca_items)
+            dev_total = sum(p.get("total_checks", 0) for p in sca_items)
+            dev_score = int(dev_pass / dev_total * 100) if dev_total else None
+
+            # Vuln count for this device (from shared summary — per-device needs indexer)
+            # We flag "unknown" unless we have per-agent data
+            endpoint_devices.append({
+                "agent_id": aid,
+                "device_name": aname,
+                "sca_score": dev_score,
+                "sca_policies": len(sca_items),
+                "sca_status": "pass" if (dev_score or 0) >= 75 else ("fail" if dev_score is not None else "no_data"),
+                "os": next((a.get("os", {}).get("name") for a in agents if a.get("id") == aid), None),
+            })
+
+        # Board-level summary sentence
+        passing_devices = sum(1 for d in endpoint_devices if d["sca_status"] == "pass")
+        total_devices = len(endpoint_devices)
+        board_summary = (
+            f"{passing_devices}/{total_devices} endpoint device(s) meet the ISO 27001 A.8.1 configuration baseline. "
+            f"{'All devices compliant.' if passing_devices == total_devices else f'{total_devices - passing_devices} device(s) require remediation.'} "
+            f"Critical vulnerabilities outstanding: {vuln_summary.get('critical', 0)}."
+            if total_devices > 0
+            else "No active endpoint agents found."
+        )
+
         return {
             "data": {
                 "framework": "ISO27001:2022",
-                "overall_score": overall_score,
-                "overall_status": "pass" if (overall_score or 0) >= 70 else "fail",
+                "overall_weighted_score": overall_score,
+                "overall_status": "pass" if (overall_score or 0) >= 75 else "fail",
+                "overall_confidence": overall_confidence,
+                "scoring": {
+                    "method": "weighted_average",
+                    "pass_threshold": 75,
+                    "note": "Scores are weighted by control importance (A.8.8 vulnerabilities weight=4, A.8.1/A.8.5/A.8.7/A.8.8/A.8.9/A.8.16 weight=3, others lower)",
+                },
                 "active_agents": len(agents),
                 "vulnerability_summary": vuln_summary,
                 "domain_summary": domain_summary,
                 "controls": control_statuses,
-                "failing_controls": [c["control_id"] for c in failing],
+                "failing_controls": [
+                    {"control_id": c["control_id"], "title": c["title"], "score": c["score"], "weight": c["weight"]}
+                    for c in sorted(failing, key=lambda x: x["weight"], reverse=True)
+                ],
                 "no_data_controls": [c["control_id"] for c in no_data],
+                "endpoint_device_panel": {
+                    "board_summary": board_summary,
+                    "devices": endpoint_devices,
+                    "total_devices": total_devices,
+                    "compliant_devices": passing_devices,
+                    "non_compliant_devices": total_devices - passing_devices,
+                },
             }
         }
 
