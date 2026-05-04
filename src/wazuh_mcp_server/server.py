@@ -1290,7 +1290,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
     _cursor = params.get("cursor")  # Reserved for future pagination
     tools = [
         {
-            "name": "get_alerts_aggregated_last_day",
+            "name": "get_alerts_aggregated",
             "description": "Retorna agregações de alerts do último dia por regra, nível e agente",
             "inputSchema": {
                 "type": "object",
