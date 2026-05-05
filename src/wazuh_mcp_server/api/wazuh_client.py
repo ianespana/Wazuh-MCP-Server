@@ -185,7 +185,7 @@ class WazuhClient:
             }
         }
 
-        response = await self.indexer.search(
+        response = await self._indexer_client._search(
             index="wazuh-alerts-*",
             body=query
         )
