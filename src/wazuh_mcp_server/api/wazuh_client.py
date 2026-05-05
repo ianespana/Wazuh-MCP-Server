@@ -186,15 +186,18 @@ class WazuhClient:
         }
 
         response = await self._indexer_client._search(
-            index="wazuh-alerts-*",
-            body=query
+            "wazuh-alerts-*",
+            query,
+            size=0
         )
 
-        buckets = response["aggregations"]["aggregated"]["buckets"]
-        after_key = response["aggregations"]["aggregated"].get("after_key")
+        aggregations = response.get("aggregations", {}).get("aggregated", {})
+
+        buckets = aggregations.get("buckets", [])
+        after_key = aggregations.get("after_key")
 
         return {
-            "total": response["hits"]["total"]["value"],
+            "total": response.get("hits", {}).get("total", {}).get("value", 0),
             "buckets": buckets,
             "next_cursor": after_key
         }
