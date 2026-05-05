@@ -56,7 +56,7 @@ DOMAIN_PATTERN = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-
 
 
 def validate_limit(
-    value: Any, min_val: int = 1, max_val: int = 1000, default: int = 100, param_name: str = "limit"
+    value: Any, min_val: int = 1, max_val: int = 10000, default: int = 100, param_name: str = "limit"
 ) -> int:
     """Validate and convert limit parameter."""
     if value is None:
@@ -404,7 +404,7 @@ def validate_active_response_command(value: Any, required: bool = False, param_n
     return command
 
 
-def validate_input(value: str, max_length: int = 1000, allowed_chars: Optional[str] = None) -> bool:
+def validate_input(value: str, max_length: int = 10000, allowed_chars: Optional[str] = None) -> bool:
     """
     Validate user input for security.
 

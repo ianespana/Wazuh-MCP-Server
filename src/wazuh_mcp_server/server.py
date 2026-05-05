@@ -74,6 +74,7 @@ logger = logging.getLogger(__name__)
 # OAuth manager (initialized on startup if needed)
 _oauth_manager = None
 
+JOBS = {}
 
 async def verify_authentication(authorization: Optional[str], config) -> Optional[Any]:
     """
@@ -130,7 +131,6 @@ async def verify_authentication(authorization: Optional[str], config) -> Optiona
         return await verify_bearer_token(authorization)
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e), headers={"WWW-Authenticate": "Bearer"})
-
 
 # MCP Protocol Models
 class MCPRequest(BaseModel):
@@ -223,7 +223,6 @@ class MCPSession:
             "client_info": self.client_info,
             "authenticated": self.authenticated,
         }
-
 
 # Session management with pluggable backend (serverless-ready)
 class SessionManager:
@@ -335,7 +334,6 @@ class SessionManager:
     async def cleanup_expired(self, timeout_minutes: int = 30) -> int:
         """Remove expired sessions and return count."""
         return await self._store.cleanup_expired(timeout_minutes=timeout_minutes)
-
 
 # Initialize session manager with pluggable backend
 # Will use Redis if REDIS_URL is set, otherwise in-memory
@@ -1278,6 +1276,54 @@ WRITE_SCOPE_TOOLS = frozenset({
 # Audit logger for destructive operations
 audit_logger = logging.getLogger("wazuh_mcp_server.audit")
 
+async def run_alerts_analysis_24h(job_id):
+    try:
+        aggregated = {
+            "rules": {},
+            "levels": {},
+            "agents": {}
+        }
+
+        total = 0
+
+        async for batch in wazuh_client.scroll_generator(
+            index="wazuh-alerts-*",
+            query={
+                "range": {
+                    "@timestamp": {
+                        "gte": "now-24h",
+                        "lt": "now"
+                    }
+                }
+            },
+            batch_size=10000
+        ):
+            for doc in batch:
+                src = doc.get("_source", {})
+
+                rule = src.get("rule", {}).get("id")
+                level = src.get("rule", {}).get("level")
+                agent = src.get("agent", {}).get("name")
+
+                if rule:
+                    aggregated["rules"][rule] = aggregated["rules"].get(rule, 0) + 1
+                if level:
+                    aggregated["levels"][level] = aggregated["levels"].get(level, 0) + 1
+                if agent:
+                    aggregated["agents"][agent] = aggregated["agents"].get(agent, 0) + 1
+
+            total += len(batch)
+
+            JOBS[job_id]["progress"] = total
+
+            await asyncio.sleep(0.05)
+
+        JOBS[job_id]["status"] = "done"
+        JOBS[job_id]["result"] = aggregated
+
+    except Exception as e:
+        JOBS[job_id]["status"] = "error"
+        JOBS[job_id]["error"] = str(e)
 
 def _get_tool_scope(tool_name: str) -> str:
     """Get the required scope for a tool."""
@@ -1306,6 +1352,25 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
                 }
             }
         },
+        {
+            "name": "start_alerts_analysis_24h",
+            "description": "Inicia análise pesada dos alerts das últimas 24h usando scroll",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "get_alerts_analysis_status",
+            "description": "Consulta status da análise",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string"}
+                },
+                "required": ["job_id"]
+            }
+        },
         # Alert Management Tools (4 tools)
         {
             "name": "get_wazuh_alerts",
@@ -1313,7 +1378,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 100},
                     "rule_id": {"type": "string", "description": "Filter by specific rule ID"},
                     "level": {"type": "string", "description": "Filter by alert level (e.g., '12', '10+')"},
                     "agent_id": {"type": "string", "description": "Filter by agent ID"},
@@ -1360,7 +1425,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
                 "properties": {
                     "query": {"type": "string", "description": "Free-text search query (Lucene syntax: AND, OR, NOT, field:value, wildcards, quoted phrases). Searched across all alert fields via Elasticsearch query_string."},
                     "time_range": {"type": "string", "enum": ["1h", "6h", "12h", "1d", "24h", "7d", "30d"], "default": "24h"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 100},
                     "rule_id": {"type": "string", "description": "Filter by Wazuh rule ID (e.g., '5710', '100002')"},
                     "agent_id": {"type": "string", "description": "Filter by Wazuh agent ID (e.g., '001', '1234')"},
                     "level": {"type": "string", "description": "Minimum rule severity level (e.g., '10' for level >= 10, '12+' for level >= 12)"},
@@ -1942,7 +2007,7 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
         # Alert Management Tools
         if tool_name == "get_wazuh_alerts":
             # Validate all parameters
-            limit = validate_limit(arguments.get("limit"), max_val=1000)
+            limit = validate_limit(arguments.get("limit"), max_val=10000)
             rule_id = validate_rule_id(arguments.get("rule_id"))
             level = arguments.get("level")
             # Validate level format: must be a number optionally followed by "+"
@@ -1991,6 +2056,49 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
             _success = True
             return _tool_result(f"Alerts Aggregated:\n{json.dumps(result, indent=2, default=str)}")
 
+        elif tool_name == "start_alerts_analysis_24h":
+            job_id = str(uuid.uuid4())
+    
+            JOBS[job_id] = {
+                "status": "running",
+                "progress": 0,
+                "result": None
+            }
+    
+            asyncio.create_task(
+                run_alerts_analysis_24h(job_id, wazuh_client)
+            )
+    
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Job iniciado: {job_id}"
+                    }
+                ]
+            }
+    
+        elif tool_name == "get_alerts_analysis_status":
+            job_id = arguments.get("job_id")
+    
+            job = JOBS.get(job_id)
+    
+            if not job:
+                return {
+                    "content": [
+                        {"type": "text", "text": "Job não encontrado"}
+                    ]
+                }
+    
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(job, indent=2)
+                    }
+                ]
+            }
+
         elif tool_name == "get_wazuh_alert_summary":
             time_range = validate_time_range(arguments.get("time_range"))
             group_by = arguments.get("group_by", "rule.level")
@@ -2009,7 +2117,7 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
         elif tool_name == "analyze_alert_patterns":
             time_range = validate_time_range(arguments.get("time_range"))
             min_frequency = validate_limit(
-                arguments.get("min_frequency"), min_val=1, max_val=1000, default=5, param_name="min_frequency"
+                arguments.get("min_frequency"), min_val=1, max_val=10000, default=5, param_name="min_frequency"
             )
             result = await wazuh_client.analyze_alert_patterns(time_range, min_frequency)
             _success = True
@@ -2018,7 +2126,7 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
         elif tool_name == "search_security_events":
             query = validate_query(arguments.get("query"), required=True)
             time_range = validate_time_range(arguments.get("time_range"))
-            limit = validate_limit(arguments.get("limit"), max_val=1000)
+            limit = validate_limit(arguments.get("limit"), max_val=10000)
             compact = validate_boolean(arguments.get("compact"), default=True, param_name="compact")
             rule_id = validate_rule_id(arguments.get("rule_id"))
             agent_id = validate_agent_id(arguments.get("agent_id"))

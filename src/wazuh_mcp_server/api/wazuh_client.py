@@ -37,8 +37,8 @@ class WazuhClient:
         self._rate_limit_enabled = True
         # Response caching for static data (bounded OrderedDict for O(1) eviction)
         self._cache: OrderedDict[str, Tuple[float, Dict[str, Any]]] = OrderedDict()
-        self._cache_ttl = 300  # 5 minutes for static data
-        self._cache_max_size = 100
+        self._cache_ttl = 43200  # 12 horas for static data
+        self._cache_max_size = 100000000 # 100M
 
         # Circuit breaker for API resilience — only trip on connection/server errors,
         # not on user-input errors (ValueError) which shouldn't degrade the circuit
@@ -159,21 +159,20 @@ class WazuhClient:
 
     async def get_alerts_aggregated(self, time_range):
 
-        query = {
-                "range": {
-                    "timestamp": {
-                        "gte": time_range["gte"],
-                        "lt": time_range["lt"]
-                    }
-                }
-        }
-
         response = await self._indexer_client._execute_search_dsl(
             index="wazuh-alerts-*",
             body={
-                "size": 0,
+                "size" : 0,
                 "track_total_hits": True,
-                "query": query,
+                "query": {
+                    "range": {
+                        "timestamp": {
+                            "gte": time_range["gte"],
+                            "lt": time_range["lt"]
+                        }
+                    },
+
+                },
                 "aggs": {
                     "rule_id": {"terms": {"field": "rule.id"}},
                     "rule_level": {"terms": {"field": "rule.level"}},
@@ -183,8 +182,8 @@ class WazuhClient:
         )
 
         aggregations = response.get("aggregations", {})
-        print(json.dumps(response, indent=2))
-        print(json.dumps(aggregations, indent=2))
+        hits = response.get("hits", {})
+
 
         rule_id = aggregations.get("rule_id", {}).get("buckets",[])
         rule_level = aggregations.get("rule_level").get("buckets",[])
@@ -192,13 +191,47 @@ class WazuhClient:
 
 
         return {
-            "total": response.get("hits", {}).get("total", {}).get("value", 0),
+            "total": hits.get("total", {}).get("value", 0),
+            "hits": hits.get("hits", []),
             "aggregations": {
                 "rule_id": rule_id,
                 "rule_level": rule_level,
                 "agent_name": agent_name
             },
         }
+
+    async def scroll_generator(
+        self,
+        index,
+        query,
+        batch_size=10000,
+        scroll="5m"
+    ):
+        data = await self.indexer.start_scroll(
+            index=index,
+            query=query,
+            batch_size=batch_size,
+            scroll=scroll
+        )
+
+        scroll_id = data.get("_scroll_id")
+        hits = data["hits"]["hits"]
+
+        try:
+            while hits:
+                yield hits
+
+                data = await self.indexer.continue_scroll(
+                    scroll_id=scroll_id,
+                    scroll=scroll
+                )
+
+                scroll_id = data.get("_scroll_id")
+                hits = data["hits"]["hits"]
+
+        finally:
+            if scroll_id:
+                await self.indexer.clear_scroll(scroll_id)
 
     async def get_agents(self, agent_id=None, status=None, limit=100, **params) -> Dict[str, Any]:
         """Get agents from Wazuh."""
@@ -589,7 +622,7 @@ class WazuhClient:
         if not self._indexer_client:
             raise IndexerNotConfiguredError()
         start = self._time_range_to_start(time_range)
-        result = await self._indexer_client.get_alerts(limit=1000, timestamp_start=start)
+        result = await self._indexer_client.get_alerts(limit=10000, timestamp_start=start)
         alerts = result.get("data", {}).get("affected_items", [])
         groups: Dict[str, int] = {}
         for alert in alerts:
@@ -612,7 +645,7 @@ class WazuhClient:
         if not self._indexer_client:
             raise IndexerNotConfiguredError()
         start = self._time_range_to_start(time_range)
-        result = await self._indexer_client.get_alerts(limit=1000, timestamp_start=start)
+        result = await self._indexer_client.get_alerts(limit=10000, timestamp_start=start)
         alerts = result.get("data", {}).get("affected_items", [])
         rule_counts: Dict[str, Dict[str, Any]] = {}
         for alert in alerts:

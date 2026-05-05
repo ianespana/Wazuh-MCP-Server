@@ -210,7 +210,34 @@ class WazuhIndexerClient:
             if e.response.status_code >= 500:
                 raise
             raise ValueError(f"Indexer query failed: {e.response.status_code}")
+                
+    async def start_scroll(self, index, query, batch_size=10000, scroll="5m"):
+        resp = await self.client.post(
+            f"/{index}/_search",
+            params={"scroll": scroll},
+            json={
+                "size": batch_size,
+                "query": query
+            }
+        )
+        return resp.json()
     
+    async def continue_scroll(self, scroll_id, scroll="5m"):
+        resp = await self.client.post(
+            "/_search/scroll",
+            json={
+                "scroll": scroll,
+                "scroll_id": scroll_id
+            }
+        )
+        return resp.json()
+
+    async def clear_scroll(self, scroll_id):
+        await self.client.delete(
+            "/_search/scroll",
+            json={"scroll_id": scroll_id}
+        )
+
     async def get_alerts(
         self,
         limit: int = 100,
