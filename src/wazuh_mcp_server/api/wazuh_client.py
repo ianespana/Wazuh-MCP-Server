@@ -168,7 +168,6 @@ class WazuhClient:
         }
 
         query = {
-            "size": 0,
             "track_total_hits": True,
             "query": {
                 "range": {
@@ -188,7 +187,7 @@ class WazuhClient:
         response = await self._indexer_client._search(
             "wazuh-alerts-*",
             query,
-            size=0
+            0
         )
 
         aggregations = response.get("aggregations", {}).get("aggregated", {})
