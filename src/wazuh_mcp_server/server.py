@@ -1976,7 +1976,13 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
             return _tool_result(f"Wazuh Alerts:\n{json.dumps(result, indent=2 if not compact else None, default=str)}")
         
         elif tool_name == "get_alerts_aggregated":
-            time_range = validate_time_range(arguments.get("time_range"))
+            gte = arguments.get("gte", "now-1d/d")
+            lt = arguments.get("lt", "now/d")
+
+            time_range = {
+                "gte": gte,
+                "lt": lt
+            }
 
             result = await wazuh_client.get_alerts_aggregated(
                 time_range=time_range,
