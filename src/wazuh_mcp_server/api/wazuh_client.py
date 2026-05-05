@@ -168,14 +168,12 @@ class WazuhClient:
         }
 
         query = {
-            "query": {
                 "range": {
                     "timestamp": {
                         "gte": time_range["gte"],
                         "lt": time_range["lt"]
                     }
                 }
-            }
         }
 
         response = await self._indexer_client._search(
