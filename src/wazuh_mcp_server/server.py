@@ -2066,7 +2066,7 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
             }
     
             asyncio.create_task(
-                run_alerts_analysis_24h(job_id, wazuh_client)
+                run_alerts_analysis_24h(job_id)
             )
     
             return {
