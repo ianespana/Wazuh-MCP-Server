@@ -182,15 +182,20 @@ class WazuhClient:
             0
         )
 
-        aggregations = response.get("aggregations", {}).get("aggregated", {})
+        aggregations = response.get("aggregations", {})
 
-        buckets = aggregations.get("buckets", [])
-        after_key = aggregations.get("after_key")
+        porNivel = aggregations.get("por_nivel", {}).get("buckets",[])
+        porAgente = aggregations.get("por_agente").get("buckets",[])
+        porRegra = aggregations.get("por_regra", {}).get("buckets",[])
+
 
         return {
             "total": response.get("hits", {}).get("total", {}).get("value", 0),
-            "buckets": buckets,
-            "next_cursor": after_key
+            "aggregations": {
+                "por_nivel": porNivel,
+                "por_agente": porAgente,
+                "por_regra": porRegra
+            },
         }
 
     async def get_agents(self, agent_id=None, status=None, limit=100, **params) -> Dict[str, Any]:
