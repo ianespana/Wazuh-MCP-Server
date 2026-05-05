@@ -168,18 +168,12 @@ class WazuhClient:
         }
 
         query = {
-            "track_total_hits": True,
             "query": {
                 "range": {
                     "timestamp": {
                         "gte": time_range["gte"],
                         "lt": time_range["lt"]
                     }
-                }
-            },
-            "aggs": {
-                "aggregated": {
-                    "composite": composite
                 }
             }
         }
