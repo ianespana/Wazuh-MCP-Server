@@ -1289,12 +1289,18 @@ async def run_alerts_analysis_24h(job_id):
         async for batch in wazuh_client.scroll_generator(
             index="wazuh-alerts-*",
             query={
-                "range": {
-                    "@timestamp": {
-                        "gte": "now-24h",
-                        "lt": "now"
+                "bool" : {
+                    "filter": [
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": "now-24h",
+                                    "lt": "now"
+                                }
+                            }
+                        }
+                    ]
                     }
-                }
             },
             batch_size=10000
         ):
