@@ -183,6 +183,7 @@ class WazuhClient:
         )
 
         aggregations = response.get("aggregations", {})
+        print(json.dumps(response, indent=2))
         print(json.dumps(aggregations, indent=2))
 
         porNivel = aggregations.get("por_nivel", {}).get("buckets",[])
