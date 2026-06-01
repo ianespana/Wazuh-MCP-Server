@@ -1366,14 +1366,6 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
             }
         },
         {
-            "name": "start_alerts_analysis_24h",
-            "description": "Inicia análise pesada dos alerts das últimas 24h usando scroll",
-            "inputSchema": {
-                "type": "object",
-                "properties": {}
-            }
-        },
-        {
             "name": "get_alerts_analysis_status",
             "description": "Consulta status da análise",
             "inputSchema": {
@@ -1408,7 +1400,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
         },
         {
             "name": "get_wazuh_alert_summary",
-            "description": "Get a summary of Wazuh alerts grouped by specified field",
+            "description": "Get a summary of Wazuh alerts grouped by specified field. Limited to the last 10,000 alerts in the given time range — if there are more alerts in the period, only the most recent 10k will be reflected in the summary. For time ranges or environments where alert volume may exceed 10k, use get_alerts_aggregated instead, which has no document limit.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2069,28 +2061,6 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
             _success = True
             return _tool_result(f"Alerts Aggregated:\n{json.dumps(result, indent=2, default=str)}")
 
-        elif tool_name == "start_alerts_analysis_24h":
-            job_id = str(uuid.uuid4())
-    
-            JOBS[job_id] = {
-                "status": "running",
-                "progress": 0,
-                "result": None
-            }
-    
-            asyncio.create_task(
-                run_alerts_analysis_24h(job_id)
-            )
-    
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Job iniciado: {job_id}"
-                    }
-                ]
-            }
-    
         elif tool_name == "get_alerts_analysis_status":
             job_id = arguments.get("job_id")
     
