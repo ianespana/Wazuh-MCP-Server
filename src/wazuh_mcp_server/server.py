@@ -1276,68 +1276,6 @@ WRITE_SCOPE_TOOLS = frozenset({
 # Audit logger for destructive operations
 audit_logger = logging.getLogger("wazuh_mcp_server.audit")
 
-async def run_alerts_analysis_24h(job_id):
-    try:
-        total = 0
-
-        # buffer para enviar ao Claude
-        buffer = []
-        BUFFER_SIZE = 2000  # ajuste conforme limite de token
-
-        analyses = []
-
-        async for batch in wazuh_client.scroll_generator(
-            index="wazuh-alerts-*",
-            query={
-                "bool": {
-                    "filter": [
-                        {
-                            "range": {
-                                "@timestamp": {
-                                    "gte": "now-24h",
-                                    "lt": "now"
-                                }
-                            }
-                        }
-                    ]
-                }
-            },
-            batch_size=10000  # pode reduzir pra aliviar memória
-        ):
-            for doc in batch:
-                src = doc.get("_source", {})
-
-                event = {
-                    "timestamp": src.get("@timestamp"),
-                    "rule_id": src.get("rule", {}).get("id"),
-                    "rule_desc": src.get("rule", {}).get("description"),
-                    "level": src.get("rule", {}).get("level"),
-                    "agent": src.get("agent", {}).get("name"),
-                }
-
-                buffer.append(event)
-
-                if len(buffer) >= BUFFER_SIZE:
-                    analysis = await analyze_with_claude(buffer)
-                    analyses.append(analysis)
-                    buffer.clear()
-
-            total += len(batch)
-            JOBS[job_id]["progress"] = total
-
-        if buffer:
-            analysis = await analyze_with_claude(buffer)
-            analyses.append(analysis)
-
-        final_analysis = await summarize_analyses(analyses)
-
-        JOBS[job_id]["status"] = "done"
-        JOBS[job_id]["result"] = final_analysis
-
-    except Exception as e:
-        JOBS[job_id]["status"] = "error"
-        JOBS[job_id]["error"] = str(e)
-
 def _get_tool_scope(tool_name: str) -> str:
     """Get the required scope for a tool."""
     return "wazuh:write" if tool_name in WRITE_SCOPE_TOOLS else "wazuh:read"
@@ -1363,17 +1301,6 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
                         "description": "Data final (ex: now/d)"
                     }
                 }
-            }
-        },
-        {
-            "name": "get_alerts_analysis_status",
-            "description": "Consulta status da análise",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "job_id": {"type": "string"}
-                },
-                "required": ["job_id"]
             }
         },
         # Alert Management Tools (4 tools)
@@ -2060,27 +1987,6 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
 
             _success = True
             return _tool_result(f"Alerts Aggregated:\n{json.dumps(result, indent=2, default=str)}")
-
-        elif tool_name == "get_alerts_analysis_status":
-            job_id = arguments.get("job_id")
-    
-            job = JOBS.get(job_id)
-    
-            if not job:
-                return {
-                    "content": [
-                        {"type": "text", "text": "Job não encontrado"}
-                    ]
-                }
-    
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(job, indent=2)
-                    }
-                ]
-            }
 
         elif tool_name == "get_wazuh_alert_summary":
             time_range = validate_time_range(arguments.get("time_range"))
