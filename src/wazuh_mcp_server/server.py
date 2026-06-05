@@ -1307,7 +1307,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
         # Alert Management Tools (4 tools)
         {
             "name": "get_wazuh_alerts",
-            "description": "Retrieve a max of 10k Wazuh security alerts with optional filtering",
+            "description": "Retrieve Wazuh security alerts with optional filtering. Use only for specific, filtered queries (by agent, rule, level, IP, etc.). When the goal is to fetch ALL alerts from a given period, use get_alerts_aggregated instead — it has no document limit and was designed for that purpose.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
