@@ -1289,7 +1289,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
     tools = [
         {
             "name": "get_alerts_aggregated",
-            "description": "Retorna agregações de Wazuh security alerts por regra, nível e agente",
+            "description": "Retrieve aggregated data for all Wazuh security alerts in the specified time range, grouped by rule, level, and agent.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
