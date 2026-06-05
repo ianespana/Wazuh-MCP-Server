@@ -1018,11 +1018,12 @@ async def handle_prompts_get(params: Dict[str, Any], session: MCPSession) -> Dic
                         "text": f"Investigate a {arguments.get('incident_type', 'security')} incident. "
                         f"Time range: {arguments.get('time_range', '24h')}. "
                         f"Steps:\n"
-                        f"1. Use get_wazuh_alerts to retrieve relevant alerts\n"
-                        f"2. Use analyze_alert_patterns to identify patterns\n"
-                        f"3. Use search_security_events to find related events\n"
-                        f"4. Use check_agent_health for affected agents\n"
-                        f"5. Use perform_risk_assessment to evaluate impact",
+                        f"1. Use get_alerts_aggregated to retrieve all alerts\n"
+                        f"2. Use get_wazuh_alerts to retrieve relevant alerts\n"
+                        f"3. Use analyze_alert_patterns to identify patterns\n"
+                        f"4. Use search_security_events to find related events\n"
+                        f"5. Use check_agent_health for affected agents\n"
+                        f"6. Use perform_risk_assessment to evaluate impact",
                     },
                 }
             ],
@@ -1288,7 +1289,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
     tools = [
         {
             "name": "get_alerts_aggregated",
-            "description": "Retorna agregações de alerts do último dia por regra, nível e agente",
+            "description": "Retorna agregações de Wazuh security alerts por regra, nível e agente",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1306,7 +1307,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
         # Alert Management Tools (4 tools)
         {
             "name": "get_wazuh_alerts",
-            "description": "Retrieve Wazuh security alerts with optional filtering",
+            "description": "Retrieve a max of 10k Wazuh security alerts with optional filtering",
             "inputSchema": {
                 "type": "object",
                 "properties": {
