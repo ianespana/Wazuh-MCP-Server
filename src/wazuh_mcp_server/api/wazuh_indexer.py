@@ -78,6 +78,14 @@ class WazuhIndexerClient:
             return "https"
         return None
 
+    @staticmethod
+    def _total_hits(hits: Dict[str, Any], default: int = 0) -> int:
+        """Read hits.total tolerating both the object ({'value': N}) and legacy int forms."""
+        total = hits.get("total", default)
+        if isinstance(total, dict):
+            return total.get("value", default)
+        return total if isinstance(total, int) else default
+
     @property
     def base_url(self) -> str:
         """Get the base URL for the Wazuh Indexer."""
@@ -191,6 +199,11 @@ class WazuhIndexerClient:
 
         except httpx.HTTPStatusError as e:
             logger.error(f"Indexer search failed: {e.response.status_code} - {e.response.text}")
+            if e.response.status_code in (401, 403):
+                raise ValueError(
+                    "Wazuh Indexer authentication failed (HTTP "
+                    f"{e.response.status_code}). Check WAZUH_INDEXER_USER / WAZUH_INDEXER_PASS."
+                )
             if e.response.status_code >= 500:
                 # Let server errors propagate so tenacity retry can see them
                 raise
@@ -326,10 +339,11 @@ class WazuhIndexerClient:
         must_clauses: list = []
 
         if rule_id:
-            must_clauses.append({"match": {"rule.id": rule_id}})
+            # Exact match on a keyword field — term, not match (which would tokenize).
+            must_clauses.append({"term": {"rule.id": rule_id}})
 
         if agent_id:
-            must_clauses.append({"match": {"agent.id": agent_id}})
+            must_clauses.append({"term": {"agent.id": agent_id}})
 
         if level:
             # level is a minimum severity threshold (e.g. "10" means level >= 10)
@@ -340,10 +354,12 @@ class WazuhIndexerClient:
                 pass
 
         if srcip:
-            must_clauses.append({"match": {"data.srcip": srcip}})
+            # IPs are exact-match keyword fields — term avoids false positives from
+            # tokenizing on the dots (e.g. 192.168.1.1 matching 192.168.1.99).
+            must_clauses.append({"term": {"data.srcip": srcip}})
 
         if dstip:
-            must_clauses.append({"match": {"data.dstip": dstip}})
+            must_clauses.append({"term": {"data.dstip": dstip}})
 
         if timestamp_start or timestamp_end:
             time_range: Dict[str, str] = {}
@@ -386,7 +402,7 @@ class WazuhIndexerClient:
         return {
             "data": {
                 "affected_items": alerts,
-                "total_affected_items": hits.get("total", {}).get("value", len(alerts)),
+                "total_affected_items": self._total_hits(hits, len(alerts)),
                 "total_failed_items": 0,
                 "failed_items": [],
             }
@@ -415,15 +431,15 @@ class WazuhIndexerClient:
         must_clauses = []
 
         if agent_id:
-            must_clauses.append({"match": {"agent.id": agent_id}})
+            must_clauses.append({"term": {"agent.id": agent_id}})
 
         if severity:
-            # Normalize severity to match indexer format
+            # Normalize severity to match indexer format (keyword exact match)
             severity_normalized = severity.capitalize()
-            must_clauses.append({"match": {"vulnerability.severity": severity_normalized}})
+            must_clauses.append({"term": {"vulnerability.severity": severity_normalized}})
 
         if cve_id:
-            must_clauses.append({"match": {"vulnerability.id": cve_id}})
+            must_clauses.append({"term": {"vulnerability.id": cve_id}})
 
         # Build the query
         if must_clauses:
@@ -464,7 +480,7 @@ class WazuhIndexerClient:
         return {
             "data": {
                 "affected_items": vulnerabilities,
-                "total_affected_items": hits.get("total", {}).get("value", len(vulnerabilities)),
+                "total_affected_items": self._total_hits(hits, len(vulnerabilities)),
                 "total_failed_items": 0,
                 "failed_items": [],
             }
