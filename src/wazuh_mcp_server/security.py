@@ -43,7 +43,17 @@ VALID_SEVERITIES = {"low", "medium", "high", "critical"}
 VALID_AGENT_STATUSES = {"active", "disconnected", "never_connected", "pending"}
 VALID_INDICATOR_TYPES = {"ip", "hash", "domain", "url"}
 VALID_REPORT_TYPES = {"daily", "weekly", "monthly", "incident"}
-VALID_COMPLIANCE_FRAMEWORKS = {"PCI-DSS", "HIPAA", "SOX", "GDPR", "NIST"}
+VALID_COMPLIANCE_FRAMEWORKS = {"PCI-DSS", "HIPAA", "SOX", "GDPR", "NIST", "ISO27001"}
+
+# ISO 27001:2022 Annex A — valid control IDs and domain prefixes
+VALID_ISO27001_DOMAINS = {"A.5", "A.6", "A.7", "A.8"}
+VALID_ISO27001_CONTROLS = {
+    "A.5", "A.5.26",
+    "A.6", "A.6.3",
+    "A.7",
+    "A.8", "A.8.1", "A.8.2", "A.8.4", "A.8.5", "A.8.7",
+    "A.8.8", "A.8.9", "A.8.12", "A.8.15", "A.8.16", "A.8.20", "A.8.22",
+}
 
 # Regex patterns for parameter validation
 AGENT_ID_PATTERN = re.compile(r"^[0-9]{1,5}$")  # Wazuh agent IDs: 0 (manager) through 99999
@@ -291,6 +301,28 @@ def validate_compliance_framework(value: Any, param_name: str = "framework") -> 
         )
 
     return framework
+
+
+def validate_iso27001_control(value: Any, required: bool = False, param_name: str = "control_id") -> Optional[str]:
+    """Validate an ISO 27001:2022 Annex A control ID or domain (e.g. 'A.8.8', 'A.8')."""
+    if value is None or str(value).strip() == "":
+        if required:
+            raise ToolValidationError(param_name, "is required", "Provide a control ID like 'A.8.8' or domain 'A.8'")
+        return None
+
+    control = str(value).strip().upper()
+    # Normalize lowercase input: a.8.8 → A.8.8
+    if control.startswith("A.") is False and control.startswith("A"):
+        control = "A." + control[1:].lstrip(".")
+
+    if control not in VALID_ISO27001_CONTROLS:
+        raise ToolValidationError(
+            param_name,
+            f"invalid control '{value}'",
+            f"Use a domain (A.5/A.6/A.7/A.8) or specific control like A.8.8. "
+            f"Supported: {', '.join(sorted(VALID_ISO27001_CONTROLS))}",
+        )
+    return control
 
 
 def validate_query(value: Any, required: bool = True, param_name: str = "query") -> str:
