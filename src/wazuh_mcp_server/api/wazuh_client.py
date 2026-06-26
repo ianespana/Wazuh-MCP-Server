@@ -37,8 +37,8 @@ class WazuhClient:
         self._rate_limit_enabled = True
         # Response caching for static data (bounded OrderedDict for O(1) eviction)
         self._cache: OrderedDict[str, Tuple[float, Dict[str, Any]]] = OrderedDict()
-        self._cache_ttl = 43200  # 12 horas for static data
-        self._cache_max_size = 100000000 # 100M
+        self._cache_ttl = 300  # 5 minutes for static data
+        self._cache_max_size = 100
 
         # Circuit breaker for API resilience — only trip on connection/server errors,
         # not on user-input errors (ValueError) which shouldn't degrade the circuit
@@ -57,8 +57,9 @@ class WazuhClient:
                 port=config.wazuh_indexer_port,
                 username=config.wazuh_indexer_user,
                 password=config.wazuh_indexer_pass,
-                verify_ssl=config.verify_ssl,
+                verify_ssl=getattr(config, "wazuh_indexer_verify_ssl", config.verify_ssl),
                 timeout=config.request_timeout_seconds,
+                use_ssl=getattr(config, "wazuh_indexer_ssl", True),
             )
             logger.info(f"WazuhIndexerClient configured for {config.wazuh_indexer_host}:{config.wazuh_indexer_port}")
         else:
@@ -157,81 +158,22 @@ class WazuhClient:
             timestamp_end=params.get("timestamp_end"),
         )
 
-    async def get_alerts_aggregated(self, time_range):
-
-        response = await self._indexer_client._execute_search_dsl(
-            index="wazuh-alerts-*",
-            body={
-                "size" : 0,
-                "track_total_hits": True,
-                "query": {
-                    "range": {
-                        "timestamp": {
-                            "gte": time_range["gte"],
-                            "lt": time_range["lt"]
-                        }
-                    },
-
-                },
-                "aggs": {
-                    "rule_id": {"terms": {"field": "rule.id","size": 100}},
-                    "rule_level": {"terms": {"field": "rule.level","size": 20}},
-                    "agent_name": {"terms": {"field": "agent.name.keyword","size": 1000}}
-                }
-            }
-        )
-
-        aggregations = response.get("aggregations", {})
-        hits = response.get("hits", {})
-
-
-        rule_id = aggregations.get("rule_id", {}).get("buckets",[])
-        rule_level = aggregations.get("rule_level").get("buckets",[])
-        agent_name = aggregations.get("agent_name", {}).get("buckets",[])
-
-
-        return {
-            "total": hits.get("total", {}).get("value", 0),
-            "hits": hits.get("hits", []),
-            "aggregations": {
-                "rule_id": rule_id,
-                "rule_level": rule_level,
-                "agent_name": agent_name
-            },
-        }
-
-    async def scroll_generator(
+    async def get_alerts_aggregated(
         self,
-        index,
-        query,
-        batch_size=10000,
-        scroll="5m"
-    ):
-        data = await self._indexer_client.start_scroll(
-            index=index,
-            query=query,
-            batch_size=batch_size,
-            scroll=scroll
+        timestamp_start: str = "now-24h",
+        timestamp_end: str = "now",
+        top_rules: int = 50,
+        top_agents: int = 50,
+    ) -> Dict[str, Any]:
+        """Aggregate alerts over a time range (no document limit) via the indexer."""
+        if not self._indexer_client:
+            raise IndexerNotConfiguredError()
+        return await self._indexer_client.aggregate_alerts(
+            timestamp_start=timestamp_start,
+            timestamp_end=timestamp_end,
+            top_rules=top_rules,
+            top_agents=top_agents,
         )
-
-        scroll_id = data.get("_scroll_id")
-        hits = data["hits"]["hits"]
-
-        try:
-            while hits:
-                yield hits
-
-                data = await self._indexer_client.continue_scroll(
-                    scroll_id=scroll_id,
-                    scroll=scroll
-                )
-
-                scroll_id = data.get("_scroll_id")
-                hits = data["hits"]["hits"]
-
-        finally:
-            if scroll_id:
-                await self._indexer_client.clear_scroll(scroll_id)
 
     async def get_agents(self, agent_id=None, status=None, limit=100, **params) -> Dict[str, Any]:
         """Get agents from Wazuh."""
@@ -622,7 +564,7 @@ class WazuhClient:
         if not self._indexer_client:
             raise IndexerNotConfiguredError()
         start = self._time_range_to_start(time_range)
-        result = await self._indexer_client.get_alerts(limit=10000, timestamp_start=start)
+        result = await self._indexer_client.get_alerts(limit=1000, timestamp_start=start)
         alerts = result.get("data", {}).get("affected_items", [])
         groups: Dict[str, int] = {}
         for alert in alerts:
@@ -645,7 +587,7 @@ class WazuhClient:
         if not self._indexer_client:
             raise IndexerNotConfiguredError()
         start = self._time_range_to_start(time_range)
-        result = await self._indexer_client.get_alerts(limit=10000, timestamp_start=start)
+        result = await self._indexer_client.get_alerts(limit=1000, timestamp_start=start)
         alerts = result.get("data", {}).get("affected_items", [])
         rule_counts: Dict[str, Dict[str, Any]] = {}
         for alert in alerts:

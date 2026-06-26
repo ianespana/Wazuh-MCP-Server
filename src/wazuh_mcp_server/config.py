@@ -74,6 +74,8 @@ class WazuhConfig:
     wazuh_indexer_port: int = 9200
     wazuh_indexer_user: Optional[str] = None
     wazuh_indexer_pass: Optional[str] = None
+    wazuh_indexer_ssl: bool = True  # Use HTTPS for the indexer (set False for plain-HTTP OpenSearch nodes)
+    wazuh_indexer_verify_ssl: bool = True  # Verify the indexer's TLS certificate
 
     # Transport settings
     mcp_transport: str = "http"  # Default to HTTP/SSE mode
@@ -173,7 +175,7 @@ class ServerConfig:
 
     # OAuth settings (when AUTH_MODE=oauth)
     OAUTH_ISSUER_URL: str = ""  # Will be auto-set to server URL if not provided
-    OAUTH_ENABLE_DCR: bool = True  # Dynamic Client Registration
+    OAUTH_ENABLE_DCR: bool = False  # Dynamic Client Registration (off by default; unauthenticated)
     OAUTH_ACCESS_TOKEN_TTL: int = 3600  # 1 hour
     OAUTH_REFRESH_TOKEN_TTL: int = 86400  # 24 hours
     OAUTH_AUTHORIZATION_CODE_TTL: int = 600  # 10 minutes
@@ -194,30 +196,53 @@ class ServerConfig:
     WAZUH_INDEXER_PORT: int = 9200
     WAZUH_INDEXER_USER: str = ""
     WAZUH_INDEXER_PASS: str = ""
+    WAZUH_INDEXER_SSL: bool = True
     WAZUH_INDEXER_VERIFY_SSL: bool = True
 
     # Logging
     LOG_LEVEL: str = "INFO"
+
+    # Deployment environment: "development" | "production"
+    ENVIRONMENT: str = "development"
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
         """Create configuration from environment variables with validation."""
         import secrets
 
-        # Generate secure secret key if not provided
-        auth_secret = os.getenv("AUTH_SECRET_KEY", "")
-        if not auth_secret:
-            auth_secret = secrets.token_hex(32)
+        environment = os.getenv("ENVIRONMENT", "development").lower()
 
         # Validate auth mode
         auth_mode = os.getenv("AUTH_MODE", "bearer").lower()
         if auth_mode not in ("bearer", "oauth", "none"):
             auth_mode = "bearer"
 
+        # Signing secret. In production with auth enabled it MUST be provided — a random
+        # per-process key invalidates all tokens on restart and breaks multi-instance
+        # deployments. Auto-generate only outside production (developer convenience).
+        auth_secret = os.getenv("AUTH_SECRET_KEY", "").strip()
+        if not auth_secret:
+            if environment == "production" and auth_mode != "none":
+                raise ConfigurationError(
+                    "AUTH_SECRET_KEY is required when ENVIRONMENT=production and AUTH_MODE is not 'none'.\n"
+                    "Generate one with: openssl rand -hex 32\n"
+                    "Set it identically across all instances so tokens survive restarts and load balancing."
+                )
+            auth_secret = secrets.token_hex(32)
+
         # Validate log level
         log_level = os.getenv("LOG_LEVEL", "INFO").upper()
         if log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
             log_level = "INFO"
+
+        # Indexer scheme: honor an explicit WAZUH_INDEXER_SSL, otherwise infer from the
+        # host prefix (http:// -> plain HTTP). Defaults to HTTPS when no scheme is given.
+        indexer_host_raw = os.getenv("WAZUH_INDEXER_HOST", "")
+        indexer_ssl_env = os.getenv("WAZUH_INDEXER_SSL")
+        if indexer_ssl_env is not None:
+            indexer_ssl = indexer_ssl_env.lower() == "true"
+        else:
+            indexer_ssl = not indexer_host_raw.strip().lower().startswith("http://")
 
         return cls(
             MCP_HOST=os.getenv("MCP_HOST", "0.0.0.0"),
@@ -228,7 +253,7 @@ class ServerConfig:
             ),
             AUTH_MODE=auth_mode,
             OAUTH_ISSUER_URL=os.getenv("OAUTH_ISSUER_URL", ""),
-            OAUTH_ENABLE_DCR=os.getenv("OAUTH_ENABLE_DCR", "true").lower() == "true",
+            OAUTH_ENABLE_DCR=os.getenv("OAUTH_ENABLE_DCR", "false").lower() == "true",
             OAUTH_ACCESS_TOKEN_TTL=validate_positive_int(
                 os.getenv("OAUTH_ACCESS_TOKEN_TTL", "3600"), "OAUTH_ACCESS_TOKEN_TTL"
             ),
@@ -246,12 +271,14 @@ class ServerConfig:
             WAZUH_VERIFY_SSL=os.getenv("WAZUH_VERIFY_SSL", "true").lower() == "true",
             WAZUH_ALLOW_SELF_SIGNED=os.getenv("WAZUH_ALLOW_SELF_SIGNED", "true").lower() == "true",
             # Wazuh Indexer settings (for vulnerability tools in Wazuh 4.8.0+)
-            WAZUH_INDEXER_HOST=normalize_host(os.getenv("WAZUH_INDEXER_HOST", "")),
+            WAZUH_INDEXER_HOST=normalize_host(indexer_host_raw),
             WAZUH_INDEXER_PORT=validate_port(os.getenv("WAZUH_INDEXER_PORT", "9200"), "WAZUH_INDEXER_PORT"),
             WAZUH_INDEXER_USER=os.getenv("WAZUH_INDEXER_USER", ""),
             WAZUH_INDEXER_PASS=os.getenv("WAZUH_INDEXER_PASS", ""),
+            WAZUH_INDEXER_SSL=indexer_ssl,
             WAZUH_INDEXER_VERIFY_SSL=os.getenv("WAZUH_INDEXER_VERIFY_SSL", "true").lower() == "true",
             LOG_LEVEL=log_level,
+            ENVIRONMENT=environment,
         )
 
     @property

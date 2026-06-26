@@ -74,7 +74,6 @@ logger = logging.getLogger(__name__)
 # OAuth manager (initialized on startup if needed)
 _oauth_manager = None
 
-JOBS = {}
 
 async def verify_authentication(authorization: Optional[str], config) -> Optional[Any]:
     """
@@ -111,9 +110,9 @@ async def verify_authentication(authorization: Optional[str], config) -> Optiona
             token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
             token_obj = _oauth_manager.validate_access_token(token)
             if token_obj:
-                # Return AuthToken with OAuth scopes
-                scope_str = getattr(token_obj, "scope", "wazuh:read wazuh:write")
-                scopes = scope_str.split() if scope_str else ["wazuh:read", "wazuh:write"]
+                # Return AuthToken with OAuth scopes (fail closed to read-only)
+                scope_str = getattr(token_obj, "scope", "") or ""
+                scopes = scope_str.split() if scope_str else ["wazuh:read"]
                 return AuthToken(
                     token=token,
                     api_key_id="oauth",
@@ -131,6 +130,7 @@ async def verify_authentication(authorization: Optional[str], config) -> Optiona
         return await verify_bearer_token(authorization)
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e), headers={"WWW-Authenticate": "Bearer"})
+
 
 # MCP Protocol Models
 class MCPRequest(BaseModel):
@@ -223,6 +223,7 @@ class MCPSession:
             "client_info": self.client_info,
             "authenticated": self.authenticated,
         }
+
 
 # Session management with pluggable backend (serverless-ready)
 class SessionManager:
@@ -334,6 +335,7 @@ class SessionManager:
     async def cleanup_expired(self, timeout_minutes: int = 30) -> int:
         """Remove expired sessions and return count."""
         return await self._store.cleanup_expired(timeout_minutes=timeout_minutes)
+
 
 # Initialize session manager with pluggable backend
 # Will use Redis if REDIS_URL is set, otherwise in-memory
@@ -454,6 +456,15 @@ async def lifespan(app: FastAPI):
 
     _cleanup_task = asyncio.create_task(_background_session_cleanup())
 
+    # Start background system metrics collection (CPU/memory gauges for /metrics).
+    try:
+        from wazuh_mcp_server.monitoring import metrics_collector
+
+        await metrics_collector.start_collection()
+        logger.info("✅ System metrics collection started")
+    except Exception as e:
+        logger.error(f"Failed to start metrics collection: {e}")
+
     # Initialize Wazuh client (will be available after yield)
     logger.info("✅ Server startup complete with high availability features enabled")
 
@@ -468,6 +479,14 @@ async def lifespan(app: FastAPI):
         await _cleanup_task
     except asyncio.CancelledError:
         pass
+
+    # Stop metrics collection
+    try:
+        from wazuh_mcp_server.monitoring import metrics_collector
+
+        await metrics_collector.stop_collection()
+    except Exception as e:
+        logger.debug(f"Metrics collection stop error: {e}")
 
     try:
         # Initiate graceful shutdown (waits for active connections)
@@ -539,6 +558,8 @@ wazuh_config = WazuhConfig(
     wazuh_indexer_port=config.WAZUH_INDEXER_PORT,
     wazuh_indexer_user=config.WAZUH_INDEXER_USER if config.WAZUH_INDEXER_USER else None,
     wazuh_indexer_pass=config.WAZUH_INDEXER_PASS if config.WAZUH_INDEXER_PASS else None,
+    wazuh_indexer_ssl=config.WAZUH_INDEXER_SSL,
+    wazuh_indexer_verify_ssl=config.WAZUH_INDEXER_VERIFY_SSL,
 )
 
 # Initialize Wazuh client
@@ -1018,12 +1039,11 @@ async def handle_prompts_get(params: Dict[str, Any], session: MCPSession) -> Dic
                         "text": f"Investigate a {arguments.get('incident_type', 'security')} incident. "
                         f"Time range: {arguments.get('time_range', '24h')}. "
                         f"Steps:\n"
-                        f"1. Use get_alerts_aggregated to retrieve all alerts\n"
-                        f"2. Use get_wazuh_alerts to retrieve relevant alerts\n"
-                        f"3. Use analyze_alert_patterns to identify patterns\n"
-                        f"4. Use search_security_events to find related events\n"
-                        f"5. Use check_agent_health for affected agents\n"
-                        f"6. Use perform_risk_assessment to evaluate impact",
+                        f"1. Use get_wazuh_alerts to retrieve relevant alerts\n"
+                        f"2. Use analyze_alert_patterns to identify patterns\n"
+                        f"3. Use search_security_events to find related events\n"
+                        f"4. Use check_agent_health for affected agents\n"
+                        f"5. Use perform_risk_assessment to evaluate impact",
                     },
                 }
             ],
@@ -1277,46 +1297,30 @@ WRITE_SCOPE_TOOLS = frozenset({
 # Audit logger for destructive operations
 audit_logger = logging.getLogger("wazuh_mcp_server.audit")
 
+
 def _get_tool_scope(tool_name: str) -> str:
     """Get the required scope for a tool."""
     return "wazuh:write" if tool_name in WRITE_SCOPE_TOOLS else "wazuh:read"
 
 
 async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict[str, Any]:
-    """Handle tools/list method - All 48 Wazuh Security Tools with pagination.
+    """Handle tools/list method - All 49 Wazuh Security Tools with pagination.
     Filters tools based on session token scopes."""
     _cursor = params.get("cursor")  # Reserved for future pagination
     tools = [
-        {
-            "name": "get_alerts_aggregated",
-            "description": "Retrieve aggregated data for all Wazuh security alerts in the specified time range, grouped by rule, level, and agent.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "gte": {
-                        "type": "string",
-                        "description": "Data inicial (ex: now-1d/d)"
-                    },
-                    "lt": {
-                        "type": "string",
-                        "description": "Data final (ex: now/d)"
-                    }
-                }
-            }
-        },
         # Alert Management Tools (4 tools)
         {
             "name": "get_wazuh_alerts",
-            "description": "Retrieve Wazuh security alerts with optional filtering. Use only for specific, filtered queries (by agent, rule, level, IP, etc.). When the goal is to fetch ALL alerts from a given period, use get_alerts_aggregated instead — it has no document limit and was designed for that purpose.",
+            "description": "Retrieve Wazuh security alerts with optional filtering",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
                     "rule_id": {"type": "string", "description": "Filter by specific rule ID"},
                     "level": {"type": "string", "description": "Filter by alert level (e.g., '12', '10+')"},
                     "agent_id": {"type": "string", "description": "Filter by agent ID"},
-                    "timestamp_start": {"type": "string", "description": "Start timestamp (ISO format)"},
-                    "timestamp_end": {"type": "string", "description": "End timestamp (ISO format)"},
+                    "timestamp_start": {"type": "string", "description": "Start timestamp — ISO 8601 (YYYY-MM-DDTHH:MM:SSZ) or relative date math (e.g. now-24h, now-7d)"},
+                    "timestamp_end": {"type": "string", "description": "End timestamp — ISO 8601 (YYYY-MM-DDTHH:MM:SSZ) or relative date math (e.g. now, now-1h)"},
                     "compact": {
                         "type": "boolean",
                         "default": True,
@@ -1328,7 +1332,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
         },
         {
             "name": "get_wazuh_alert_summary",
-            "description": "Get a summary of Wazuh alerts grouped by specified field. Limited to the last 10,000 alerts in the given time range — if there are more alerts in the period, only the most recent 10k will be reflected in the summary. For time ranges or environments where alert volume may exceed 10k, use get_alerts_aggregated instead, which has no document limit.",
+            "description": "Get a summary of Wazuh alerts grouped by specified field",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1351,6 +1355,20 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
             },
         },
         {
+            "name": "get_alerts_aggregated",
+            "description": "Summarize ALL alerts in a time window using indexer aggregations (no document limit). Returns the true total match count plus top rules, severity levels, and agents. Prefer this over get_wazuh_alerts/get_wazuh_alert_summary when the goal is a complete overview of a period rather than individual alert documents.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "timestamp_start": {"type": "string", "description": "Start of window — ISO 8601 or date math (e.g. now-24h, now-7d). Default now-24h.", "default": "now-24h"},
+                    "timestamp_end": {"type": "string", "description": "End of window — ISO 8601 or date math (e.g. now). Default now.", "default": "now"},
+                    "top_rules": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "How many top rules to return"},
+                    "top_agents": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50, "description": "How many top agents to return"},
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "search_security_events",
             "description": "Search for specific security events across all Wazuh data. Supports free-text search (Lucene syntax: AND, OR, NOT, field:value, wildcards, quoted phrases) and structured field filters. All filters are combined with AND logic.",
             "inputSchema": {
@@ -1358,7 +1376,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
                 "properties": {
                     "query": {"type": "string", "description": "Free-text search query (Lucene syntax: AND, OR, NOT, field:value, wildcards, quoted phrases). Searched across all alert fields via Elasticsearch query_string."},
                     "time_range": {"type": "string", "enum": ["1h", "6h", "12h", "1d", "24h", "7d", "30d"], "default": "24h"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
                     "rule_id": {"type": "string", "description": "Filter by Wazuh rule ID (e.g., '5710', '100002')"},
                     "agent_id": {"type": "string", "description": "Filter by Wazuh agent ID (e.g., '001', '1234')"},
                     "level": {"type": "string", "description": "Minimum rule severity level (e.g., '10' for level >= 10, '12+' for level >= 12)"},
@@ -1886,7 +1904,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
 
 
 async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict[str, Any]:
-    """Handle tools/call method - All 48 Wazuh Security Tools with comprehensive validation."""
+    """Handle tools/call method - All 49 Wazuh Security Tools with comprehensive validation."""
     tool_name = params.get("name")
     arguments = params.get("arguments", {})
 
@@ -1940,7 +1958,7 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
         # Alert Management Tools
         if tool_name == "get_wazuh_alerts":
             # Validate all parameters
-            limit = validate_limit(arguments.get("limit"), max_val=10000)
+            limit = validate_limit(arguments.get("limit"), max_val=1000)
             rule_id = validate_rule_id(arguments.get("rule_id"))
             level = arguments.get("level")
             # Validate level format: must be a number optionally followed by "+"
@@ -1972,22 +1990,6 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
             result = _add_truncation_warning(result, limit)
             _success = True
             return _tool_result(f"Wazuh Alerts:\n{json.dumps(result, indent=2 if not compact else None, default=str)}")
-        
-        elif tool_name == "get_alerts_aggregated":
-            gte = arguments.get("gte", "now-1d/d")
-            lt = arguments.get("lt", "now/d")
-
-            time_range = {
-                "gte": gte,
-                "lt": lt
-            }
-
-            result = await wazuh_client.get_alerts_aggregated(
-                time_range=time_range,
-            )
-
-            _success = True
-            return _tool_result(f"Alerts Aggregated:\n{json.dumps(result, indent=2, default=str)}")
 
         elif tool_name == "get_wazuh_alert_summary":
             time_range = validate_time_range(arguments.get("time_range"))
@@ -2007,16 +2009,34 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
         elif tool_name == "analyze_alert_patterns":
             time_range = validate_time_range(arguments.get("time_range"))
             min_frequency = validate_limit(
-                arguments.get("min_frequency"), min_val=1, max_val=10000, default=5, param_name="min_frequency"
+                arguments.get("min_frequency"), min_val=1, max_val=1000, default=5, param_name="min_frequency"
             )
             result = await wazuh_client.analyze_alert_patterns(time_range, min_frequency)
             _success = True
             return _tool_result(f"Alert Patterns:\n{json.dumps(result, indent=2, default=str)}")
 
+        elif tool_name == "get_alerts_aggregated":
+            timestamp_start = validate_timestamp(arguments.get("timestamp_start"), param_name="timestamp_start") or "now-24h"
+            timestamp_end = validate_timestamp(arguments.get("timestamp_end"), param_name="timestamp_end") or "now"
+            top_rules = validate_limit(
+                arguments.get("top_rules"), min_val=1, max_val=500, default=50, param_name="top_rules"
+            )
+            top_agents = validate_limit(
+                arguments.get("top_agents"), min_val=1, max_val=500, default=50, param_name="top_agents"
+            )
+            result = await wazuh_client.get_alerts_aggregated(
+                timestamp_start=timestamp_start,
+                timestamp_end=timestamp_end,
+                top_rules=top_rules,
+                top_agents=top_agents,
+            )
+            _success = True
+            return _tool_result(f"Aggregated Alerts:\n{json.dumps(result, indent=2, default=str)}")
+
         elif tool_name == "search_security_events":
             query = validate_query(arguments.get("query"), required=True)
             time_range = validate_time_range(arguments.get("time_range"))
-            limit = validate_limit(arguments.get("limit"), max_val=10000)
+            limit = validate_limit(arguments.get("limit"), max_val=1000)
             compact = validate_boolean(arguments.get("compact"), default=True, param_name="compact")
             rule_id = validate_rule_id(arguments.get("rule_id"))
             agent_id = validate_agent_id(arguments.get("agent_id"))
@@ -3240,15 +3260,18 @@ async def get_auth_token(request: Request):
         # Validate against auth_manager (handles MCP_API_KEY env var and auto-generated keys)
         from wazuh_mcp_server.auth import auth_manager
 
-        if not auth_manager.validate_api_key(api_key):
+        key_obj = auth_manager.validate_api_key(api_key)
+        if not key_obj:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # Create JWT token with safe payload (no API key exposure)
+        # Mint the JWT with the API key's actual scopes (fail closed to read-only),
+        # so a read-only key cannot be upgraded to write at token issuance.
+        granted_scopes = key_obj.scopes or ["wazuh:read"]
         token = create_access_token(
             data={
                 "sub": "wazuh_mcp_user",
                 "iat": datetime.now(timezone.utc).timestamp(),
-                "scope": "wazuh:read wazuh:write",
+                "scope": " ".join(granted_scopes),
             },
             secret_key=config.AUTH_SECRET_KEY,
         )
