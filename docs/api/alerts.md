@@ -24,8 +24,8 @@ Retrieve Wazuh security alerts with comprehensive filtering options.
 | `rule_id` | string | `null` | No | Filter by specific Wazuh rule ID |
 | `level` | string | `null` | No | Filter by alert level (e.g., '12', '10+', '5-8') |
 | `agent_id` | string | `null` | No | Filter by specific agent ID |
-| `timestamp_start` | string | `null` | No | Start timestamp in ISO format (2024-01-01T00:00:00Z) |
-| `timestamp_end` | string | `null` | No | End timestamp in ISO format (2024-01-01T23:59:59Z) |
+| `timestamp_start` | string | `null` | No | Start time. ISO 8601 (`2024-01-01T00:00:00Z`) or relative date math (`now-24h`, `now-7d`) |
+| `timestamp_end` | string | `null` | No | End time. ISO 8601 (`2024-01-01T23:59:59Z`) or relative date math (`now`, `now-1h`) |
 
 ### Usage Examples
 
@@ -118,7 +118,7 @@ This queries:
 
 ```json
 {
-  "error": "Invalid timestamp format. Use ISO format: YYYY-MM-DDTHH:MM:SSZ",
+  "error": "Invalid timestamp. Use ISO 8601 (YYYY-MM-DDTHH:MM:SSZ) or relative date math (e.g. now-24h)",
   "error_code": "INVALID_TIMESTAMP",
   "timestamp": "2024-01-01T15:00:00Z"
 }
@@ -219,9 +219,40 @@ This queries:
 
 ---
 
+## 📈 get_alerts_aggregated
+
+Summarize **all** alerts in a time window using Indexer aggregations (`size=0`), with no per-document limit. Unlike `get_wazuh_alerts`/`get_wazuh_alert_summary` (which read at most the most recent documents), this returns the true total match count plus the top rules, severity levels, and agents for the period — ideal for "what happened in the last 7 days" overviews on busy deployments.
+
+### Parameters
+
+| Parameter | Type | Default | Required | Description |
+|-----------|------|---------|----------|-------------|
+| `timestamp_start` | string | `now-24h` | No | Start of window. ISO 8601 or relative date math (`now-7d`) |
+| `timestamp_end` | string | `now` | No | End of window. ISO 8601 or relative date math (`now`) |
+| `top_rules` | integer | `50` | No | Number of top rules to return (1–500) |
+| `top_agents` | integer | `50` | No | Number of top agents to return (1–500) |
+
+### Response Format
+
+```json
+{
+  "time_range": { "gte": "now-7d", "lte": "now" },
+  "total_alerts": 53312,
+  "top_rules": [
+    { "rule_id": "100200", "count": 533, "description": "File modified in /root", "level": 7 }
+  ],
+  "by_level": [ { "level": 10, "count": 42 } ],
+  "top_agents": [ { "agent": "web-01", "count": 400 } ]
+}
+```
+
+Requires the Wazuh Indexer to be configured (`WAZUH_INDEXER_HOST`).
+
+---
+
 ## 🔍 analyze_alert_patterns
 
-AI-powered analysis of alert patterns to identify trends, anomalies, and potential security issues.
+Analysis of alert patterns to identify trends, anomalies, and potential security issues.
 
 ### Parameters
 

@@ -7,7 +7,7 @@
 
 **Talk to your SIEM.** Query alerts, hunt threats, check vulnerabilities, and trigger active responses across your entire Wazuh deployment — through natural conversation with any AI assistant.
 
-> **v4.2.1** | 48 security tools | Wazuh 4.8.0–4.14.4 | [Changelog](CHANGELOG.md)
+> **v4.2.1** | 54 security tools | Wazuh 4.8.0–4.14.4 | [Changelog](CHANGELOG.md)
 
 ---
 
@@ -28,7 +28,7 @@ You:    "Block that source IP on agent-003"
 AI:     [calls wazuh_block_ip] Blocked 10.0.1.45 via firewall-drop on agent-003.
 
 You:    "Which agents have unpatched critical CVEs?"
-AI:     [calls get_critical_vulnerabilities] 3 agents with critical vulnerabilities...
+AI:     [calls get_wazuh_critical_vulnerabilities] 3 agents with critical vulnerabilities...
 ```
 
 It works with **Claude Desktop**, **Open WebUI + Ollama** (fully local, air-gapped), **mcphost**, or any MCP-compliant client.
@@ -75,20 +75,23 @@ Open WebUI v0.6.31+ connects to our `/mcp` endpoint natively. Add it as an MCP t
 
 ---
 
-## 48 Security Tools
+## 54 Security Tools
 
 Every tool is validated, rate-limited, scope-checked, and audit-logged.
 
 | Category | Tools | What They Do |
 |----------|-------|-------------|
-| **Alerts** (4) | `get_wazuh_alerts` `get_wazuh_alert_summary` `analyze_alert_patterns` `search_security_events` | Query, filter, search, and analyze alert data via Elasticsearch |
+| **Alerts** (5) | `get_wazuh_alerts` `get_wazuh_alert_summary` `get_alerts_aggregated` `analyze_alert_patterns` `search_security_events` | Query, filter, search, and aggregate alert data via the Indexer. Timestamps accept ISO 8601 or relative date math (`now-24h`); `get_alerts_aggregated` summarizes a whole period with no document limit |
 | **Agents** (6) | `get_wazuh_agents` `get_wazuh_running_agents` `check_agent_health` `get_agent_processes` `get_agent_ports` `get_agent_configuration` | Monitor agent status, running processes, open ports, and configs |
-| **Vulnerabilities** (3) | `get_wazuh_vulnerabilities` `get_critical_vulnerabilities` `vulnerability_summary` | Query CVEs by severity, agent, and package |
-| **Security Analysis** (6) | `analyze_security_threat` `check_ioc_reputation` `perform_risk_assessment` `get_top_security_threats` `generate_security_report` `run_compliance_check` | Threat analysis, IOC lookup, risk scoring, compliance checks |
-| **System** (10) | `get_wazuh_statistics` `get_wazuh_cluster_health` `get_wazuh_rules_summary` `search_wazuh_manager_logs` ... | Cluster health, rules, manager logs, stats |
-| **Active Response** (9) | `wazuh_block_ip` `wazuh_isolate_host` `wazuh_kill_process` `wazuh_disable_user` `wazuh_quarantine_file` ... | Block IPs, isolate hosts, kill processes, quarantine files |
-| **Verification** (5) | `wazuh_check_blocked_ip` `wazuh_check_agent_isolation` `wazuh_check_process` `wazuh_check_user_status` ... | Verify active response actions took effect |
+| **Vulnerabilities** (3) | `get_wazuh_vulnerabilities` `get_wazuh_critical_vulnerabilities` `get_wazuh_vulnerability_summary` | Query CVEs by severity, agent, and package |
+| **Security Analysis** (5) | `analyze_security_threat` `check_ioc_reputation` `perform_risk_assessment` `get_top_security_threats` `generate_security_report` | Threat analysis, IOC lookup, risk scoring, security reports |
+| **Compliance** (6) | `run_compliance_check` `get_iso27001_dashboard` `get_iso27001_control_detail` `get_iso27001_gap_analysis` `get_iso27001_alerts` `get_sca_policy_checks` | Compliance scoring for PCI-DSS, HIPAA, SOX, GDPR, NIST, and ISO 27001:2022 (Annex A control mapping, gap analysis, SCA detail) |
+| **System** (10) | `get_wazuh_statistics` `get_wazuh_cluster_health` `get_wazuh_cluster_nodes` `get_wazuh_rules_summary` `search_wazuh_manager_logs` `get_wazuh_manager_error_logs` `get_wazuh_log_collector_stats` `get_wazuh_remoted_stats` `get_wazuh_weekly_stats` `validate_wazuh_connection` | Cluster health, rules, manager logs, stats, connectivity |
+| **Active Response** (9) | `wazuh_block_ip` `wazuh_isolate_host` `wazuh_kill_process` `wazuh_disable_user` `wazuh_quarantine_file` `wazuh_firewall_drop` `wazuh_host_deny` `wazuh_active_response` `wazuh_restart` | Block IPs, isolate hosts, kill processes, quarantine files |
+| **Verification** (5) | `wazuh_check_blocked_ip` `wazuh_check_agent_isolation` `wazuh_check_process` `wazuh_check_user_status` `wazuh_check_file_quarantine` | Verify active response actions took effect |
 | **Rollback** (5) | `wazuh_unisolate_host` `wazuh_enable_user` `wazuh_restore_file` `wazuh_firewall_allow` `wazuh_host_allow` | Undo active response actions |
+
+The 14 state-changing tools (Active Response + Rollback) require the `wazuh:write` scope; everything else needs only `wazuh:read`. ISO 27001 also adds an `iso27001_assessment` guided prompt (5 prompts total).
 
 ---
 
@@ -135,7 +138,7 @@ This server sits between an LLM and your SIEM. Security is not optional.
 
 | Layer | What It Does |
 |-------|-------------|
-| **RBAC** | Per-tool scope enforcement. 14 active response tools require `wazuh:write`. Read-only tokens can query but never trigger actions. Authless mode is read-only by default. |
+| **RBAC** | Per-tool scope enforcement, **fail-closed**: a token with no scope claim gets read-only, never write. The 14 state-changing tools (active response + rollback) require `wazuh:write`, which is **opt-in** (`MCP_API_KEY_SCOPES="wazuh:read wazuh:write"`). Authless mode is read-only unless `AUTHLESS_ALLOW_WRITE=true`. |
 | **Audit Logging** | Every destructive tool call (block IP, isolate host, kill process) is logged with client ID, session, timestamp, and full arguments. |
 | **Output Sanitization** | Credentials, tokens, and API keys in alert `full_log` fields are redacted before reaching the LLM. Prevents credential leakage through AI responses. |
 | **Input Validation** | Every parameter validated: regex agent IDs, `ipaddress` module for IPs, shell metacharacter blocking for active response, Elasticsearch Query DSL (no string interpolation). |
@@ -165,23 +168,32 @@ python -c "import secrets; print('wazuh_' + secrets.token_urlsafe(32))"
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `ENVIRONMENT` | `development` | `production` enforces stricter checks (see below) |
 | `WAZUH_PORT` | `55000` | Manager API port |
+| `WAZUH_VERIFY_SSL` | `true` | Verify the Manager's TLS certificate |
 | `MCP_HOST` | `0.0.0.0` | Server bind address |
 | `MCP_PORT` | `3000` | Server port |
 | `AUTH_MODE` | `bearer` | `oauth`, `bearer`, or `none` |
-| `AUTH_SECRET_KEY` | auto-generated | JWT signing key |
+| `AUTH_SECRET_KEY` | auto (dev only) | JWT signing key. **Required when `ENVIRONMENT=production`** (the server refuses to start without it) — set the same value on every instance |
+| `MCP_API_KEY` | auto (dev only) | Pre-set API key (`wazuh_…`) |
+| `MCP_API_KEY_SCOPES` | `wazuh:read` | Scopes for `MCP_API_KEY`. Add `wazuh:write` to enable active-response tools |
 | `AUTHLESS_ALLOW_WRITE` | `false` | Allow active response in authless mode |
-| `ALLOWED_ORIGINS` | `https://claude.ai` | CORS origins (comma-separated) |
+| `ALLOWED_ORIGINS` | `https://claude.ai,...` | CORS origins (comma-separated) |
+| `TRUSTED_PROXIES` | — | Proxy IPs to trust for `X-Forwarded-For` (correct per-client rate limiting behind a proxy) |
 | `REDIS_URL` | — | Redis URL for multi-instance session storage |
+
+> **Production note:** the server listens over plain HTTP — terminate TLS at a reverse proxy or load balancer. OAuth knobs (`OAUTH_ENABLE_DCR` — off by default, `OAUTH_*_TTL`) and rate-limit tuning (`RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW`) are in the [Configuration Guide](docs/configuration.md).
 
 ### Wazuh Indexer (for alert search + vulnerabilities)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WAZUH_INDEXER_HOST` | — | Indexer hostname |
+| `WAZUH_INDEXER_HOST` | — | Indexer hostname (an `http://` prefix selects plain HTTP) |
 | `WAZUH_INDEXER_PORT` | `9200` | Indexer port |
 | `WAZUH_INDEXER_USER` | — | Indexer username |
 | `WAZUH_INDEXER_PASS` | — | Indexer password |
+| `WAZUH_INDEXER_SSL` | `true` | Use HTTPS for the Indexer (set `false` for a plain-HTTP OpenSearch node) |
+| `WAZUH_INDEXER_VERIFY_SSL` | `true` | Verify the Indexer's TLS certificate |
 
 > Full reference: [Configuration Guide](docs/configuration.md)
 
@@ -204,7 +216,7 @@ python -c "import secrets; print('wazuh_' + secrets.token_urlsafe(32))"
 
 ```
 src/wazuh_mcp_server/
-├── server.py           # MCP protocol + 48 tool handlers
+├── server.py           # MCP protocol + 54 tool handlers
 ├── config.py           # Environment-based configuration
 ├── auth.py             # JWT + API key authentication
 ├── oauth.py            # OAuth 2.0 with Dynamic Client Registration
@@ -286,6 +298,8 @@ We welcome contributions. See [Issues](https://github.com/gensecaihq/Wazuh-MCP-S
 | <img src="https://github.com/taylorwalton.png" width="40" height="40" style="border-radius: 50%"/> | [@taylorwalton](https://github.com/taylorwalton) | PRs |
 | <img src="https://github.com/MilkyWay88.png" width="40" height="40" style="border-radius: 50%"/> | [@MilkyWay88](https://github.com/MilkyWay88) | PRs |
 | <img src="https://github.com/kanylbullen.png" width="40" height="40" style="border-radius: 50%"/> | [@kanylbullen](https://github.com/kanylbullen) | Code, PRs |
+| <img src="https://github.com/andrzej-piotrowski-pl.png" width="40" height="40" style="border-radius: 50%"/> | [@andrzej-piotrowski-pl](https://github.com/andrzej-piotrowski-pl) | Code, PRs |
+| <img src="https://github.com/lucascruzb.png" width="40" height="40" style="border-radius: 50%"/> | [@lucascruzb](https://github.com/lucascruzb) | Code, PRs |
 | <img src="https://github.com/Uberkarhu.png" width="40" height="40" style="border-radius: 50%"/> | [@Uberkarhu](https://github.com/Uberkarhu) | Issues |
 | <img src="https://github.com/cbassonbgroup.png" width="40" height="40" style="border-radius: 50%"/> | [@cbassonbgroup](https://github.com/cbassonbgroup) | Issues |
 | <img src="https://github.com/cybersentinel-06.png" width="40" height="40" style="border-radius: 50%"/> | [@cybersentinel-06](https://github.com/cybersentinel-06) | Issues |

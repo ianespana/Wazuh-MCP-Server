@@ -1375,7 +1375,7 @@ def _get_tool_scope(tool_name: str) -> str:
 
 
 async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict[str, Any]:
-    """Handle tools/list method - All 49 Wazuh Security Tools with pagination.
+    """Handle tools/list method - All 54 Wazuh Security Tools with pagination.
     Filters tools based on session token scopes."""
     _cursor = params.get("cursor")  # Reserved for future pagination
     tools = [
@@ -2089,7 +2089,7 @@ async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict
 
 
 async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict[str, Any]:
-    """Handle tools/call method - All 49 Wazuh Security Tools with comprehensive validation."""
+    """Handle tools/call method - All 54 Wazuh Security Tools with comprehensive validation."""
     tool_name = params.get("name")
     arguments = params.get("arguments", {})
 

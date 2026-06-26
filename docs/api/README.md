@@ -1,14 +1,15 @@
-# FastMCP Tools API Reference
+# MCP Tools API Reference
 
-Complete reference for all 48 tools available in Wazuh MCP Server v4.2.0.
+Complete reference for all 54 tools available in Wazuh MCP Server v4.2.1.
 
 ## 🛠️ Tool Categories
 
-### 🚨 [Alert Management](alerts.md) (4 tools)
-Query and analyze security alerts from Wazuh with advanced filtering and pattern analysis.
+### 🚨 [Alert Management](alerts.md) (5 tools)
+Query and analyze security alerts from Wazuh with advanced filtering and pattern analysis. Timestamps accept ISO 8601 or relative date math (e.g. `now-24h`).
 
 - **get_wazuh_alerts** - Retrieve security alerts with filtering options
 - **get_wazuh_alert_summary** - Alert summaries grouped by criteria
+- **get_alerts_aggregated** - Summarize a whole time range via Indexer aggregations (no document limit)
 - **analyze_alert_patterns** - Pattern analysis for trend identification
 - **search_security_events** - Advanced security event search
 
@@ -29,16 +30,26 @@ Identify and analyze security vulnerabilities across your environment.
 - **get_wazuh_critical_vulnerabilities** - Critical vulnerabilities only
 - **get_wazuh_vulnerability_summary** - Vulnerability statistics and trends
 
-### 🔍 [Security Analysis](security-analysis.md) (7 tools)
-AI-powered security analysis and threat intelligence capabilities.
+### 🔍 [Security Analysis](security-analysis.md) (5 tools)
+Security analysis and threat intelligence capabilities.
 
-- **search_security_events** - Advanced security event search with query filtering
-- **analyze_security_threat** - AI-powered threat analysis
+- **analyze_security_threat** - Threat analysis
 - **check_ioc_reputation** - IoC reputation checking
 - **perform_risk_assessment** - Comprehensive risk analysis
 - **get_top_security_threats** - Top threats by severity
 - **generate_security_report** - Automated security reporting
-- **run_compliance_check** - Compliance framework validation
+
+### 📋 [Compliance & Reporting](compliance-reporting.md) (6 tools)
+Compliance scoring grounded in live Wazuh data.
+
+- **run_compliance_check** - Framework validation: PCI-DSS, HIPAA, SOX, GDPR, NIST, ISO27001
+- **get_iso27001_dashboard** - ISO 27001:2022 posture by Annex A domain
+- **get_iso27001_control_detail** - Drill into a control (e.g. `A.8.8`) with live evidence
+- **get_iso27001_gap_analysis** - Prioritized gap list with remediation hints
+- **get_iso27001_alerts** - Recent alerts mapped to ISO 27001 control domains
+- **get_sca_policy_checks** - Check-level SCA detail (pass/fail, rationale, remediation)
+
+Also adds an `iso27001_assessment` guided prompt.
 
 ### 📊 [System Monitoring](system-monitoring.md) (10 tools)
 Monitor system health, performance, and operational metrics.
@@ -141,7 +152,7 @@ All tools return JSON responses with consistent structure:
   "metadata": {
     "query_time": "2024-01-01T12:00:00Z",
     "api_source": "wazuh_server",
-    "version": "4.2.0"
+    "version": "4.2.1"
   }
 }
 ```
@@ -159,29 +170,24 @@ Consistent error responses across all tools:
 
 ## 🔄 API Integration
 
-### Intelligent API Routing
-Tools automatically choose the optimal API based on:
+### Which backend each tool uses
 
-- **Wazuh Server API**: For agent management, rules, configuration
-- **Wazuh Indexer API**: For alerts, vulnerabilities, event search
+Each tool targets one backend by design (there is no cross-fallback between them):
 
-```python
-# Automatic API selection
-if indexer_available and use_indexer_for_alerts:
-    return await indexer_client.search_alerts(query)
-else:
-    return await server_client.get_alerts(query)
-```
+- **Wazuh Manager API** — agents, rules, cluster, manager logs/stats, active response, verification, rollback, SCA.
+- **Wazuh Indexer (OpenSearch)** — alert query/summary/aggregation, security event search, and vulnerabilities.
 
-### Fallback Mechanisms
-- **Server API fails** → Auto-retry with Indexer API
-- **Indexer API fails** → Auto-retry with Server API
-- **Both fail** → Return structured error response
+Indexer-backed tools require `WAZUH_INDEXER_HOST`. When it isn't configured, those tools return a clear `IndexerNotConfiguredError` rather than silently falling back.
+
+### Resilience
+- Transient failures (5xx, connection, timeout) are retried with exponential backoff.
+- Repeated failures open a per-client **circuit breaker** for ~60s, then a single trial request probes recovery.
+- A 429 (upstream rate-limit) is retried but does **not** trip the breaker.
 
 ## 🎨 Tool Development
 
 ### Adding New Tools
-See [Development Guide](../development/api.md) for creating custom FastMCP tools.
+See [Development Guide](../development/api.md) for creating custom MCP tools.
 
 ### Tool Categories
 Tools are organized by functionality:

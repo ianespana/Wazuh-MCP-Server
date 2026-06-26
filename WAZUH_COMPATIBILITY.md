@@ -159,16 +159,14 @@ This document details the compatibility of Wazuh MCP Server with different Wazuh
 
 ```bash
 # .env configuration
-WAZUH_API_VERSION=v4
 WAZUH_HOST=your-wazuh-server
 WAZUH_PORT=55000
 WAZUH_USER=your-user
 WAZUH_PASS=your-password
-VERIFY_SSL=true
+WAZUH_VERIFY_SSL=true
 
-# Enable Indexer (Required for 4.8.0+)
-USE_INDEXER_FOR_ALERTS=true
-USE_INDEXER_FOR_VULNERABILITIES=true
+# Configure the Indexer (required for alerts, aggregation, and vulnerabilities on 4.8.0+).
+# Setting WAZUH_INDEXER_HOST is what enables the Indexer-backed tools.
 WAZUH_INDEXER_HOST=your-indexer-host
 WAZUH_INDEXER_PORT=9200
 WAZUH_INDEXER_USER=admin
@@ -179,16 +177,14 @@ WAZUH_INDEXER_PASS=admin
 
 ```bash
 # .env configuration
-WAZUH_API_VERSION=v4
 WAZUH_HOST=your-wazuh-server
 WAZUH_PORT=55000
 WAZUH_USER=your-user
 WAZUH_PASS=your-password
-VERIFY_SSL=true
+WAZUH_VERIFY_SSL=true
 
-# Indexer NOT available in 4.7.x and below
-USE_INDEXER_FOR_ALERTS=false
-USE_INDEXER_FOR_VULNERABILITIES=false
+# Leave WAZUH_INDEXER_HOST unset: the Indexer-backed tools (alert search,
+# get_alerts_aggregated, vulnerabilities) require Wazuh 4.8.0+ and won't work here.
 ```
 
 ---
@@ -276,12 +272,12 @@ async def get_vulnerabilities(self, **params):
 1. **Backup your current Wazuh configuration**
 2. **Upgrade Wazuh server to 4.8.0 or higher**
 3. **Install Wazuh Indexer**
-4. **Update MCP Server configuration:**
+4. **Update MCP Server configuration** (setting the Indexer host enables the Indexer-backed tools):
    ```bash
-   USE_INDEXER_FOR_ALERTS=true
-   USE_INDEXER_FOR_VULNERABILITIES=true
    WAZUH_INDEXER_HOST=your-indexer
    WAZUH_INDEXER_PORT=9200
+   WAZUH_INDEXER_USER=admin
+   WAZUH_INDEXER_PASS=admin
    ```
 5. **Restart MCP Server** - No code changes needed!
 

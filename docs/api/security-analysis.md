@@ -223,7 +223,7 @@ SCA-based compliance assessment. Filters SCA policies by framework relevance whe
 
 | Parameter | Type | Default | Required | Description |
 |-----------|------|---------|----------|-------------|
-| `framework` | string | `"PCI-DSS"` | No | `PCI-DSS`, `HIPAA`, `SOX`, `GDPR`, `NIST` |
+| `framework` | string | `"PCI-DSS"` | No | `PCI-DSS`, `HIPAA`, `SOX`, `GDPR`, `NIST`, `ISO27001` |
 | `agent_id` | string | `null` | No | Specific agent (null = sample up to 5 active agents) |
 
 ### Response

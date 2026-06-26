@@ -1,501 +1,211 @@
 # Configuration Guide
 
-Complete configuration reference for Wazuh MCP Server v4.2.0.
-
-## 📋 Configuration Overview
-
-Wazuh MCP Server uses environment variables for configuration, loaded from:
-1. `.env` file (recommended for development)
-2. System environment variables (recommended for production)
-3. Default values (built-in fallbacks)
+Complete configuration reference for Wazuh MCP Server v4.2.1.
 
-## 🔧 Basic Configuration
-
-### Required Settings
-
-```bash
-# Wazuh Server Connection
-WAZUH_HOST=your-wazuh-server.com
-WAZUH_PORT=55000
-WAZUH_USER=your-username
-WAZUH_PASS=your-password
-```
-
-### Minimal Working Configuration
-
-Create `.env` with these minimal settings:
+All configuration is via environment variables, loaded from (highest precedence first):
 
-```bash
-# Basic Wazuh Connection
-WAZUH_HOST=localhost
-WAZUH_PORT=55000
-WAZUH_USER=wazuh
-WAZUH_PASS=changeme
-
-# Transport Configuration
-MCP_TRANSPORT=streamable-http
-```
-
-## 💡 Complete Configuration Reference
-
-### Wazuh Server API Configuration
-
-```bash
-# Wazuh Server Connection
-WAZUH_HOST=your-wazuh-server.com          # Wazuh server hostname/IP
-WAZUH_PORT=55000                          # Wazuh API port (default: 55000)
-WAZUH_USER=your-username                  # Wazuh API username
-WAZUH_PASS=your-password                  # Wazuh API password
-
-# API Protocol
-WAZUH_PROTOCOL=https                      # Protocol (http/https)
-WAZUH_API_VERSION=v1                      # API version
-
-# Authentication
-WAZUH_AUTH_TYPE=basic                     # Authentication type (basic/jwt)
-WAZUH_JWT_TOKEN=                          # JWT token (if using JWT auth)
-```
-
-### Wazuh Indexer Configuration
-
-```bash
-# Wazuh Indexer (OpenSearch/Elasticsearch)
-WAZUH_INDEXER_HOST=your-indexer-host.com  # Indexer hostname/IP
-WAZUH_INDEXER_PORT=9200                   # Indexer port (default: 9200)
-WAZUH_INDEXER_USER=admin                  # Indexer username
-WAZUH_INDEXER_PASS=admin                  # Indexer password
-WAZUH_INDEXER_PROTOCOL=https              # Indexer protocol
-
-# API Routing Configuration
-USE_INDEXER_FOR_ALERTS=true               # Use Indexer for alerts (recommended)
-USE_INDEXER_FOR_VULNERABILITIES=true     # Use Indexer for vulnerabilities
-```
-
-### SSL/TLS Configuration
-
-```bash
-# SSL Certificate Verification
-VERIFY_SSL=true                           # Verify SSL certificates (recommended)
-ALLOW_SELF_SIGNED=false                   # Allow self-signed certificates
-
-# Custom Certificate Paths
-CA_BUNDLE_PATH=/path/to/ca-bundle.crt     # Custom CA bundle
-CLIENT_CERT_PATH=/path/to/client.crt      # Client certificate
-CLIENT_KEY_PATH=/path/to/client.key       # Client private key
-
-# SSL/TLS Version
-MIN_TLS_VERSION=TLSv1.2                   # Minimum TLS version
-SSL_TIMEOUT=30                            # SSL connection timeout (seconds)
-```
-
-### Logging Configuration
-
-```bash
-# Log Level
-LOG_LEVEL=INFO                            # Log level (DEBUG/INFO/WARNING/ERROR)
-
-# Log Output
-LOG_FORMAT=json                           # Log format (json/text)
-LOG_FILE=logs/wazuh-mcp-server.log       # Log file path
-LOG_MAX_SIZE=100MB                        # Max log file size
-LOG_BACKUP_COUNT=5                        # Number of backup log files
-
-# Audit Logging
-AUDIT_LOGGING=true                        # Enable audit logging
-AUDIT_LOG_FILE=logs/audit.log            # Audit log file
-```
-
-### Performance Configuration
-
-```bash
-# Connection Pooling
-MAX_CONNECTIONS=100                       # Maximum connections
-CONNECTION_TIMEOUT=30                     # Connection timeout (seconds)
-READ_TIMEOUT=60                          # Read timeout (seconds)
-
-# Rate Limiting
-RATE_LIMIT_REQUESTS=1000                 # Requests per minute
-RATE_LIMIT_BURST=100                     # Burst requests allowed
-
-# Caching
-CACHE_TTL=300                            # Cache TTL (seconds)
-CACHE_MAX_SIZE=1000                      # Maximum cache entries
-```
-
-### FastMCP Configuration
-
-```bash
-# Transport Settings
-MCP_TRANSPORT=streamable-http            # Transport type (streamable-http)
-MCP_SERVER_NAME=Wazuh MCP Server         # Server name
-MCP_SERVER_VERSION=4.2.0                 # Server version
-
-# Tool Configuration
-ENABLE_SECURITY_TOOLS=true               # Enable security analysis tools
-ENABLE_COMPLIANCE_TOOLS=true             # Enable compliance tools
-ENABLE_VULNERABILITY_TOOLS=true          # Enable vulnerability tools
-```
-
-### Development Configuration
-
-```bash
-# Development Settings
-DEBUG=false                              # Enable debug mode
-DEVELOPMENT_MODE=false                   # Enable development features
-
-# Testing
-TEST_MODE=false                          # Enable test mode
-MOCK_WAZUH_RESPONSES=false              # Use mock responses for testing
-```
-
-## 🏗️ Environment-Specific Configurations
-
-### Development Environment
-
-```bash
-# .env.development
-WAZUH_HOST=dev-wazuh-server.internal
-WAZUH_PORT=55000
-WAZUH_USER=dev-user
-WAZUH_PASS=dev-password
-
-# Relaxed SSL for development
-VERIFY_SSL=false
-ALLOW_SELF_SIGNED=true
-
-# Verbose logging
-LOG_LEVEL=DEBUG
-DEBUG=true
-
-# Development features
-DEVELOPMENT_MODE=true
-```
-
-### Production Environment
-
-```bash
-# .env.production
-WAZUH_HOST=prod-wazuh-server.company.com
-WAZUH_PORT=55000
-WAZUH_USER=mcp-service-account
-WAZUH_PASS=very-secure-password
-
-# Strict security
-VERIFY_SSL=true
-ALLOW_SELF_SIGNED=false
-MIN_TLS_VERSION=TLSv1.3
-
-# Production logging
-LOG_LEVEL=INFO
-AUDIT_LOGGING=true
-
-# Performance optimization
-MAX_CONNECTIONS=200
-CACHE_TTL=600
-```
-
-### Testing Environment
-
-```bash
-# .env.testing
-WAZUH_HOST=test-wazuh-server.internal
-WAZUH_PORT=55000
-WAZUH_USER=test-user
-WAZUH_PASS=test-password
-
-# Testing settings
-TEST_MODE=true
-MOCK_WAZUH_RESPONSES=false
-LOG_LEVEL=DEBUG
-
-# Reduced timeouts for faster tests
-CONNECTION_TIMEOUT=10
-READ_TIMEOUT=20
-```
-
-## 🔒 Security Best Practices
-
-### Credential Management
-
-**❌ Don't do this:**
-```bash
-# Hard-coded passwords in configuration files
-WAZUH_PASS=my-secret-password
-```
-
-**✅ Do this instead:**
-```bash
-# Use environment variables
-export WAZUH_PASS="$(cat /secure/wazuh-password)"
-
-# Or use a secrets management system
-WAZUH_PASS="$(/path/to/get-secret wazuh-password)"
-```
-
-### File Permissions
-
-```bash
-# Secure .env file permissions
-chmod 600 .env
-chown your-user:your-group .env
-
-# Secure log directory
-chmod 750 logs/
-chown your-user:your-group logs/
-```
-
-### SSL/TLS Hardening
-
-```bash
-# Production SSL configuration
-VERIFY_SSL=true
-ALLOW_SELF_SIGNED=false
-MIN_TLS_VERSION=TLSv1.3
-SSL_TIMEOUT=10
-
-# Use proper certificates
-CA_BUNDLE_PATH=/etc/ssl/certs/ca-certificates.crt
-CLIENT_CERT_PATH=/etc/wazuh-mcp/client.crt
-CLIENT_KEY_PATH=/etc/wazuh-mcp/client.key
-```
-
-## 🎯 Configuration Validation
-
-### Health Check
-
-```bash
-# Validate configuration
-curl -s http://localhost:3000/health | jq .
-
-# Check with verbose output
-curl -v http://localhost:3000/health
-```
-
-### Configuration Test
-
-```bash
-# Test configuration via health endpoint
-curl -s http://localhost:3000/health | jq .
-
-# Verify imports
-PYTHONPATH=src python -c "from wazuh_mcp_server.server import app; print('OK')"
-```
-
-## 📝 Configuration Examples
-
-### Example 1: Basic Setup
-
-```bash
-# .env
-WAZUH_HOST=192.168.1.100
-WAZUH_PORT=55000
-WAZUH_USER=wazuh-api
-WAZUH_PASS=secure-password
-VERIFY_SSL=false
-MCP_TRANSPORT=streamable-http
-LOG_LEVEL=INFO
-```
-
-### Example 2: High Availability Setup
-
-```bash
-# .env
-WAZUH_HOST=wazuh-cluster.company.com
-WAZUH_PORT=55000
-WAZUH_USER=mcp-service
-WAZUH_PASS=complex-password
-
-# Indexer for performance
-WAZUH_INDEXER_HOST=wazuh-indexer.company.com
-WAZUH_INDEXER_PORT=9200
-USE_INDEXER_FOR_ALERTS=true
-
-# Security hardening
-VERIFY_SSL=true
-MIN_TLS_VERSION=TLSv1.3
-CA_BUNDLE_PATH=/etc/ssl/company-ca.crt
-
-# Performance tuning
-MAX_CONNECTIONS=500
-CACHE_TTL=900
-RATE_LIMIT_REQUESTS=2000
-```
-
-### Example 3: Multi-Tenant Setup
-
-```bash
-# .env.tenant1
-WAZUH_HOST=tenant1-wazuh.company.com
-WAZUH_USER=tenant1-mcp
-WAZUH_PASS=tenant1-password
-MCP_SERVER_NAME=Tenant1 Wazuh MCP
-LOG_FILE=logs/tenant1-wazuh-mcp.log
-```
-
-## 🔄 Dynamic Configuration
-
-### Environment Variable Overrides
-
-Configuration precedence (highest to lowest):
-1. Command-line arguments
-2. System environment variables
-3. `.env` file
-4. Default values
-
-```bash
-# Override via environment variable
-export WAZUH_HOST=new-server.com
-docker compose up -d
-```
-
-### Configuration Reloading
-
-Currently, configuration changes require server restart:
-
-```bash
-# After changing .env file
-docker compose restart wazuh-mcp-remote-server
-```
-
-## 🐛 Troubleshooting Configuration
-
-### Common Configuration Issues
-
-#### Connection Issues
-```bash
-# Test connectivity
-curl -k -u "user:pass" "https://wazuh-server:55000/"
-
-# Check DNS resolution
-nslookup wazuh-server.com
-
-# Check firewall
-telnet wazuh-server.com 55000
-```
-
-#### SSL Certificate Issues
-```bash
-# Test SSL certificate
-openssl s_client -connect wazuh-server:55000 -servername wazuh-server
-
-# Check certificate validity
-openssl x509 -in certificate.crt -text -noout
-```
-
-#### Permission Issues
-```bash
-# Check file permissions
-ls -la .env
-ls -la logs/
-
-# Fix permissions
-chmod 600 .env
-chmod 750 logs/
-```
-
-### Configuration Debugging
-
-Enable debug logging:
-```bash
-LOG_LEVEL=DEBUG
-DEBUG=true
-```
-
-Check configuration loading:
-```bash
-# Validate configuration syntax
-python -c "from wazuh_mcp_server.config import WazuhConfig; config = WazuhConfig(); print('Configuration loaded successfully')"
-```
-
-## 🤖 Claude Desktop Integration
-
-> **Important:** Claude Desktop supports remote MCP servers through the **Connectors UI**, not via `claude_desktop_config.json`. The JSON config file only supports local stdio-based MCP servers.
-
-### Requirements
-
-- **Claude Pro, Max, Team, or Enterprise plan** (custom connectors require paid plan)
-- Server accessible via **HTTPS** (required for production)
-- Feature is currently in **beta**
-
-### Configuration Steps
-
-1. **Deploy your server** with HTTPS enabled
-2. Open Claude Desktop → **Settings** → **Connectors**
-3. Click **"Add custom connector"**
-4. Enter your server URL:
-   - Streamable HTTP: `https://your-domain.com/mcp`
-   - Legacy SSE: `https://your-domain.com/sse`
-5. Configure authentication in **Advanced settings** if needed
-6. Click **Connect**
-
-### Authentication Modes
-
-Configure via `AUTH_MODE` environment variable:
-
-| Mode | Value | Description |
-|------|-------|-------------|
-| **OAuth** | `oauth` | OAuth 2.0 with DCR (recommended for Claude Desktop) |
-| **Bearer** | `bearer` | JWT token authentication (default) |
-| **Authless** | `none` | No authentication (development only) |
-
-**OAuth Mode (`AUTH_MODE=oauth`):**
-- Discovery: `/.well-known/oauth-authorization-server`
-- Endpoints: `/oauth/authorize`, `/oauth/token`, `/oauth/register`
-- Claude Desktop connects seamlessly via DCR
-
-**Bearer Mode (`AUTH_MODE=bearer`):**
-```bash
-# Get JWT token
-curl -X POST https://your-server.com/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"api_key": "wazuh_your-api-key"}'
-```
-
-**Authless Mode (`AUTH_MODE=none`):**
-- No authentication required
-- **Read-only by default** — active response tools are disabled
-- Set `AUTHLESS_ALLOW_WRITE=true` to explicitly enable write operations
-- For development/testing only
-
-### Role-Based Access Control (RBAC)
-
-Tools are divided into two scopes:
+1. System environment variables (recommended for production)
+2. A `.env` file in the working directory (convenient for development)
+3. Built-in defaults
+
+Only the variables listed here are read by the server. (See `.env.example` for a ready-to-copy template.)
+
+## Required
+
+| Variable | Description |
+|----------|-------------|
+| `WAZUH_HOST` | Wazuh Manager hostname or IP |
+| `WAZUH_USER` | Manager API username |
+| `WAZUH_PASS` | Manager API password |
+
+The Manager API is always reached over HTTPS on `WAZUH_PORT` (it is TLS-only).
+
+## Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENVIRONMENT` | `development` | `production` enforces stricter startup checks (see [Production](#production)) |
+| `MCP_HOST` | `0.0.0.0` | Bind address |
+| `MCP_PORT` | `3000` | Listen port (plain HTTP — terminate TLS at a reverse proxy) |
+| `MCP_TRANSPORT` | `http` | Transport. Only HTTP/SSE is implemented |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `MAX_MEMORY_MB` | `512` | Memory budget used for the ratio reported by `/health` and `/metrics` |
+
+## Wazuh Manager
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WAZUH_PORT` | `55000` | Manager API port |
+| `WAZUH_VERIFY_SSL` | `true` | Verify the Manager's TLS certificate. Set `false` only for self-signed certs in development |
+
+## Wazuh Indexer
+
+Required for alert search, aggregation, and vulnerability tools (the vulnerability API was removed in Wazuh 4.8.0 and replaced by Indexer queries).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WAZUH_INDEXER_HOST` | — | Indexer hostname/IP. An explicit `http://` prefix selects plain HTTP |
+| `WAZUH_INDEXER_PORT` | `9200` | Indexer port |
+| `WAZUH_INDEXER_USER` | — | Indexer username |
+| `WAZUH_INDEXER_PASS` | — | Indexer password |
+| `WAZUH_INDEXER_SSL` | `true` | Use HTTPS for the Indexer. Set `false` for a plain-HTTP OpenSearch node (inferred automatically from an `http://` prefix on the host) |
+| `WAZUH_INDEXER_VERIFY_SSL` | `true` | Verify the Indexer's TLS certificate |
+
+## Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_MODE` | `bearer` | `bearer`, `oauth`, or `none` (authless) |
+| `AUTH_SECRET_KEY` | auto (dev only) | HMAC/JWT signing key. **Required when `ENVIRONMENT=production`** unless `AUTH_MODE=none`; the server refuses to start without it. Use the same value on every instance so tokens survive restarts and load balancing. Generate with `openssl rand -hex 32` |
+| `TOKEN_LIFETIME_HOURS` | `24` | Session-token lifetime |
+| `MCP_API_KEY` | auto (dev only) | A single pre-set API key in the form `wazuh_<43 chars>`. Generate with `python -c "import secrets; print('wazuh_' + secrets.token_urlsafe(32))"` |
+| `MCP_API_KEY_SCOPES` | `wazuh:read` | Space-separated scopes granted to `MCP_API_KEY`. Add `wazuh:write` to enable active-response/rollback tools |
+| `API_KEYS` | — | JSON array for multiple keys with individual scopes |
+| `AUTHLESS_ALLOW_WRITE` | `false` | In `AUTH_MODE=none`, allow write tools for unauthenticated callers (dangerous on a `0.0.0.0` bind) |
+
+Scopes are **fail-closed**: a token with no scope claim is treated as read-only, and write is never granted implicitly.
+
+### OAuth (only when `AUTH_MODE=oauth`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OAUTH_ISSUER_URL` | derived from request | Public issuer URL |
+| `OAUTH_ENABLE_DCR` | `false` | Dynamic Client Registration. Off by default (the endpoint is unauthenticated); enable only if you need it |
+| `OAUTH_ACCESS_TOKEN_TTL` | `3600` | Access-token lifetime (seconds) |
+| `OAUTH_REFRESH_TOKEN_TTL` | `86400` | Refresh-token lifetime (seconds) |
+| `OAUTH_AUTHORIZATION_CODE_TTL` | `600` | Authorization-code lifetime (seconds) |
+
+OAuth requires **PKCE with `S256`**; authorization codes are single-use and refresh tokens rotate on every use.
+
+## Network, CORS & rate limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALLOWED_ORIGINS` | `https://claude.ai,http://localhost:3000` | Comma-separated CORS origins |
+| `TRUSTED_PROXIES` | — | Comma-separated proxy IPs trusted for `X-Forwarded-For`. Set this behind a reverse proxy/load balancer so rate limiting keys on the real client IP |
+| `RATE_LIMIT_REQUESTS` | `100` | Allowed requests per window, per client |
+| `RATE_LIMIT_WINDOW` | `60` | Rate-limit window (seconds) |
+
+## Sessions
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_URL` | — | Redis URL for shared session storage across instances. Without it, sessions are in-memory (single-instance) |
+| `SESSION_TTL_SECONDS` | `1800` | Session inactivity timeout |
+
+## TLS / HTTPS
+
+The server speaks plain HTTP on `MCP_PORT`. There is **no built-in HTTPS listener** — terminate TLS at a reverse proxy (nginx, Caddy, Traefik) or a load balancer, which is also where you set HSTS, client-cert policies, and TLS versions.
+
+## Role-Based Access Control (RBAC)
 
 | Scope | Tools | Description |
 |-------|-------|-------------|
-| `wazuh:read` | 34 tools | Alerts, agents, vulnerabilities, analysis, system monitoring, verification |
-| `wazuh:write` | 14 tools | Active response (block IP, isolate host, kill process, etc.) and rollback tools |
+| `wazuh:read` | 40 tools | Alerts, agents, vulnerabilities, analysis, compliance, system monitoring, verification |
+| `wazuh:write` | 14 tools | Active response (block IP, isolate host, kill process, …) and rollback tools |
 
-- **Scope enforcement**: Every `tools/call` checks the token's scopes before execution
-- **Filtered tool list**: `tools/list` only shows tools the token has permission to use
-- **Audit logging**: All `wazuh:write` tool calls are logged with client ID, session, and arguments
-- Default API keys and OAuth tokens include both `wazuh:read` and `wazuh:write` scopes
-- Create read-only API keys via the `API_KEYS` JSON env var with `"scopes": ["wazuh:read"]`
+- **Fail-closed:** a token with no scope claim gets read-only; write is opt-in.
+- **Scope enforcement:** every `tools/call` checks the token's scopes before executing.
+- **Filtered tool list:** `tools/list` only returns the tools the token may call.
+- **Audit logging:** every `wazuh:write` call is logged with client ID, session, timestamp, and arguments.
+- Grant write to the env key with `MCP_API_KEY_SCOPES="wazuh:read wazuh:write"`, or per-key via the `API_KEYS` JSON (`"scopes": ["wazuh:read"]`).
 
-### Common Error
+## Authentication modes
 
-If you see this error:
+Configure via `AUTH_MODE`:
+
+| Mode | Value | Description |
+|------|-------|-------------|
+| **Bearer** | `bearer` | API-key → JWT/session-token auth (default) |
+| **OAuth** | `oauth` | OAuth 2.0 with PKCE (good for Claude Desktop) |
+| **Authless** | `none` | No authentication; read-only unless `AUTHLESS_ALLOW_WRITE=true` (development only) |
+
+**Bearer — exchange an API key for a JWT:**
+```bash
+curl -X POST https://your-server/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"api_key": "wazuh_your-api-key"}'
 ```
-Could not load app settings
-"path": ["mcpServers", "wazuh-security", "command"]
-"message": "Required"
+The JWT carries the API key's own scopes (read-only unless the key was granted write).
+
+**OAuth discovery & endpoints:** `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` (and `/oauth/register` only when `OAUTH_ENABLE_DCR=true`).
+
+## Environment-specific examples
+
+### Development
+```bash
+ENVIRONMENT=development
+WAZUH_HOST=dev-wazuh.internal
+WAZUH_USER=dev-user
+WAZUH_PASS=dev-password
+WAZUH_VERIFY_SSL=false           # self-signed dev certs
+LOG_LEVEL=DEBUG
+# AUTH_SECRET_KEY / MCP_API_KEY auto-generated and printed on startup
 ```
 
-**Cause:** You edited `claude_desktop_config.json` with `url` + `headers` format.
+### Production
+```bash
+ENVIRONMENT=production
+WAZUH_HOST=wazuh.company.com
+WAZUH_USER=mcp-service-account
+WAZUH_PASS=very-secure-password
+WAZUH_VERIFY_SSL=true
 
-**Solution:** Use the **Connectors UI** instead. The JSON config only supports local stdio servers.
+AUTH_MODE=bearer
+AUTH_SECRET_KEY=<openssl rand -hex 32, identical on every instance>
+MCP_API_KEY=wazuh_<generated>
+MCP_API_KEY_SCOPES=wazuh:read              # add wazuh:write only if this key triggers active response
+TRUSTED_PROXIES=10.0.0.1                    # your reverse proxy
 
-For detailed instructions, see the [Claude Desktop Integration](../README.md#-claude-desktop-integration) section in the main README.
+WAZUH_INDEXER_HOST=wazuh-indexer.company.com
+WAZUH_INDEXER_USER=admin
+WAZUH_INDEXER_PASS=<secret>
+WAZUH_INDEXER_VERIFY_SSL=true
 
-## 📞 Getting Help
+REDIS_URL=redis://redis:6379/0             # required for multi-instance
+LOG_LEVEL=INFO
+```
 
-For configuration issues:
+In production the server **refuses to start** if `AUTH_SECRET_KEY` is unset (and `AUTH_MODE != none`).
 
-1. **Check [Troubleshooting Guide](TROUBLESHOOTING.md)**
-2. **Run health check**: `curl http://localhost:3000/health`
-3. **Check Prometheus metrics**: `curl http://localhost:3000/metrics`
-4. **Check logs**: `docker compose logs -f wazuh-mcp-remote-server`
+## Validation & troubleshooting
+
+```bash
+# Health (no auth) — shows status + service checks
+curl -s http://localhost:3000/health | jq .
+
+# Prometheus metrics (CPU/memory gauges, request counters)
+curl -s http://localhost:3000/metrics | head
+
+# Verify the app imports with the current env
+PYTHONPATH=src python -c "import wazuh_mcp_server.server; print('OK')"
+```
+
+Common checks:
+```bash
+# Manager reachability (TLS)
+curl -k -u "$WAZUH_USER:$WAZUH_PASS" "https://$WAZUH_HOST:55000/"
+
+# Indexer reachability
+curl -k -u "$WAZUH_INDEXER_USER:$WAZUH_INDEXER_PASS" "https://$WAZUH_INDEXER_HOST:9200/"
+```
+
+Configuration changes require a restart:
+```bash
+docker compose restart wazuh-mcp-remote-server
+```
+
+## Claude Desktop integration
+
+> Claude Desktop connects to remote MCP servers through the **Connectors UI**, not `claude_desktop_config.json` (the JSON file only supports local stdio servers).
+
+1. Deploy with HTTPS in front (reverse proxy).
+2. Claude Desktop → **Settings → Connectors → Add custom connector**.
+3. URL: `https://your-domain.com/mcp` (or `/sse` for legacy SSE).
+4. Configure auth in **Advanced settings** (Bearer token, or OAuth if `AUTH_MODE=oauth`).
+
+See [Claude Integration](CLAUDE_INTEGRATION.md) for details.
 
 ---
 
-**Next Steps**: See [Security Guide](security/README.md) for security hardening or [API Reference](api/README.md) for available tools.
+**Next:** [Security Guide](security/README.md) · [API Reference](api/README.md) · [Troubleshooting](TROUBLESHOOTING.md)

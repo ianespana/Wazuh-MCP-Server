@@ -85,14 +85,17 @@ Wazuh-MCP-Server/
 │       └── branch-sync.yml    # Branch synchronization
 ├── src/wazuh_mcp_server/      # Main source code
 │   ├── __init__.py
-│   ├── __main__.py            # Entry point
-│   ├── main.py                # FastMCP server (main branch)
-│   ├── server.py              # MCP remote server with SSE
+│   ├── __main__.py            # Entry point (python -m wazuh_mcp_server)
+│   ├── server.py              # MCP protocol + tool handlers (FastAPI: Streamable HTTP + SSE)
 │   ├── config.py              # Configuration management
-│   ├── api/                   # Wazuh API clients
-│   ├── tools/                 # MCP tool implementations
-│   ├── scripts/               # Utility scripts
-│   └── utils/                 # Shared utilities
+│   ├── config_validator.py    # Production config validation helpers
+│   ├── auth.py                # API key + JWT authentication
+│   ├── oauth.py               # OAuth 2.0 (PKCE)
+│   ├── security.py            # Rate limiting, CORS, input validation
+│   ├── monitoring.py          # Prometheus metrics, health checks
+│   ├── resilience.py          # Circuit breakers, retries, graceful shutdown
+│   ├── session_store.py       # Pluggable sessions (in-memory + Redis)
+│   └── api/                   # Wazuh Manager + Indexer clients
 ├── tests/                     # Test suite
 ├── tools/                     # Development tools
 │   ├── branch-sync.py         # Branch synchronization

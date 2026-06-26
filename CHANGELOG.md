@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`get_alerts_aggregated` tool**: summarizes a whole time window via Indexer aggregations (`size=0`) with no per-document limit — true total count plus top rules, severity levels, and agents (#81).
+- **ISO 27001:2022 compliance tools** (contributed by @andrzej-piotrowski-pl, #74): `get_iso27001_dashboard`, `get_iso27001_control_detail`, `get_iso27001_gap_analysis`, `get_iso27001_alerts`, `get_sca_policy_checks`, the `iso27001_assessment` guided prompt, and `ISO27001` as a `run_compliance_check` framework (Annex A control mapping to live Wazuh data).
+- **Relative timestamps**: `timestamp_start`/`timestamp_end` now accept OpenSearch date math (`now-24h`, `now-7d/d`) in addition to ISO 8601 (#73).
+- **Plain-HTTP Indexer support**: `WAZUH_INDEXER_SSL` (and an `http://` prefix on `WAZUH_INDEXER_HOST`) allow pointing at a non-TLS OpenSearch node; `WAZUH_INDEXER_VERIFY_SSL` is now honored (#78).
+- **`MCP_API_KEY_SCOPES`** to grant the env API key write access (read-only by default).
+
+### Changed
+- **RBAC fails closed**: a token with no scope claim is read-only; write is opt-in. The 14 state-changing tools (active response + rollback) require `wazuh:write`. `/auth/token` mints the API key's actual scopes instead of always read+write.
+- **`AUTH_SECRET_KEY` required in production**: with `ENVIRONMENT=production` and `AUTH_MODE != none`, the server refuses to start without it (prevents per-restart token invalidation and cross-instance auth failures).
+- **OAuth hardened**: mandatory S256 PKCE, single-use authorization codes, refresh-token rotation with replay detection, an effective revocation denylist, and DCR off by default with redirect-URI validation.
+- **Indexer queries** use `term` (not `match`) for exact keyword/IP filters; `hits.total` parsing tolerates both int and object forms; 401/403 returns a clear credentials message.
+- **Dependencies** trimmed (removed unused `fastmcp`, `passlib`, `aiofiles`) and pinned with upper bounds; tool count is now **54**.
+
+### Fixed
+- **System metrics never collected**: `MetricsCollector` is now started/stopped in the app lifespan, so `/metrics` reports real CPU/memory (previously always `0`).
+- **Circuit breaker tripped on 429**: an upstream rate-limit no longer opens the breaker (5xx still does).
+- **`tools/list` `nextCursor: null`**: confirmed resolved — list responses omit the cursor field (#75).
+- Documentation corrected for accuracy: real env-var reference, 54-tool inventory, removed non-existent config keys, and the no-built-in-TLS (reverse-proxy) note.
+
 ## [4.2.1] - 2026-03-26
 
 ### Fixed
