@@ -90,7 +90,7 @@ the authorization-code + PKCE login flow and this server validates its access JW
 | --- | --- |----------------------------------------------------------------|
 | `MCP_RESOURCE_URL` | yes | Public resource URL, e.g. `https://wazuh-mcp.example.com/mcp`  |
 | `OIDC_ISSUER_URL` | yes | OIDC provider issuer URL                                       |
-| `OIDC_AUDIENCE` | yes | Expected access-token audience; normally `MCP_RESOURCE_URL`    |
+| `OIDC_AUDIENCE` | yes | Expected access-token audience; normally `MCP_RESOURCE_URL`, or an explicitly configured Authentik client ID when that is the emitted `aud` |
 | `OIDC_DISCOVERY_URL` | no | Defaults to `<issuer>/.well-known/openid-configuration`        |
 | `OIDC_JWKS_URL` | no | Defaults to discovery's `jwks_uri`                             |
 | `OIDC_ALLOWED_ALGORITHMS` | no | Comma-separated allowlist, default `RS256`; `none` is rejected |

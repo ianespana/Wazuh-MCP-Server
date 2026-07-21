@@ -269,7 +269,10 @@ class ServerConfig:
             if not discovery_url:
                 discovery_url = issuer.rstrip("/") + "/.well-known/openid-configuration"
             if environment == "production":
-                for name, value in (("OIDC_ISSUER_URL", issuer), ("OIDC_AUDIENCE", audience), ("MCP_RESOURCE_URL", resource_url)):
+                # An audience may be either a resource URI or an opaque OAuth
+                # client_id (Authentik commonly uses the latter). Only URLs we
+                # actually dereference or publish must be HTTPS in production.
+                for name, value in (("OIDC_ISSUER_URL", issuer), ("MCP_RESOURCE_URL", resource_url)):
                     parsed = urlparse(value)
                     loopback = parsed.hostname in ("localhost", "127.0.0.1", "::1")
                     if parsed.scheme != "https" and not loopback:
