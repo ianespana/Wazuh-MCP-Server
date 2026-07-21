@@ -3545,8 +3545,6 @@ async def oauth_protected_resource_metadata():
         {
             "resource": config.MCP_RESOURCE_URL,
             "authorization_servers": [config.OIDC_ISSUER_URL],
-            "scopes_supported": ["wazuh:read", "wazuh:write"],
-            "bearer_methods_supported": ["header"],
         }
     )
 

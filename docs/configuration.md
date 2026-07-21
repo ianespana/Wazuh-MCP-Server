@@ -98,7 +98,9 @@ the authorization-code + PKCE login flow and this server validates its access JW
 | `OIDC_READ_GROUPS` / `OIDC_WRITE_GROUPS` | no | Optional Authentik group-to-scope mapping                      |
 
 The server exposes `/.well-known/oauth-protected-resource` and
-`/.well-known/oauth-protected-resource/mcp`. Missing credentials return a 401
+`/.well-known/oauth-protected-resource/mcp`. The scope catalog is supplied by
+the authorization server's OIDC discovery; the MCP validates only the
+`wazuh:read` and `wazuh:write` scopes it receives in access tokens. Missing credentials return a 401
 with a `resource_metadata` challenge; invalid tokens return `invalid_token`.
 Tokens are accepted only in the `Authorization: Bearer` header. Signature, `kid`,
 expiration, issuer, audience, allowed algorithm and scopes are checked using OIDC

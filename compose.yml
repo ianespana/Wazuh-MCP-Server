@@ -30,7 +30,7 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: 3000
       ENVIRONMENT: production
-      # Authentication mode: oauth (recommended), bearer (default), none (dev only)
+      # Authentication mode: oidc (recommended), bearer, legacy oauth, or none (dev only)
       AUTH_MODE: ${AUTH_MODE:-bearer}
       
     ports:
