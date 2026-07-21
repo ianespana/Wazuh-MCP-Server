@@ -173,7 +173,7 @@ python -c "import secrets; print('wazuh_' + secrets.token_urlsafe(32))"
 | `WAZUH_VERIFY_SSL` | `true` | Verify the Manager's TLS certificate |
 | `MCP_HOST` | `0.0.0.0` | Server bind address |
 | `MCP_PORT` | `3000` | Server port |
-| `AUTH_MODE` | `bearer` | `oauth`, `bearer`, or `none` |
+| `AUTH_MODE` | `bearer` | `oidc` (recommended production), `oauth` (legacy), `bearer`, or `none` |
 | `AUTH_SECRET_KEY` | auto (dev only) | JWT signing key. **Required when `ENVIRONMENT=production`** (the server refuses to start without it) — set the same value on every instance |
 | `MCP_API_KEY` | auto (dev only) | Pre-set API key (`wazuh_…`) |
 | `MCP_API_KEY_SCOPES` | `wazuh:read` | Scopes for `MCP_API_KEY`. Add `wazuh:write` to enable active-response tools |
@@ -182,7 +182,7 @@ python -c "import secrets; print('wazuh_' + secrets.token_urlsafe(32))"
 | `TRUSTED_PROXIES` | — | Proxy IPs to trust for `X-Forwarded-For` (correct per-client rate limiting behind a proxy) |
 | `REDIS_URL` | — | Redis URL for multi-instance session storage |
 
-> **Production note:** the server listens over plain HTTP — terminate TLS at a reverse proxy or load balancer. OAuth knobs (`OAUTH_ENABLE_DCR` — off by default, `OAUTH_*_TTL`) and rate-limit tuning (`RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW`) are in the [Configuration Guide](docs/configuration.md).
+> **Production note:** use an external OIDC provider such as Authentik (`AUTH_MODE=oidc`). The MCP publishes protected-resource metadata and validates the provider's access JWT; it never issues tokens in this mode. Internal `AUTH_MODE=oauth` is legacy/development compatibility only. Terminate TLS at a reverse proxy or load balancer. Full Authentik setup and OIDC settings are in the [Configuration Guide](docs/configuration.md).
 
 ### Wazuh Indexer (for alert search + vulnerabilities)
 

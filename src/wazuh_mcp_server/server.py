@@ -30,6 +30,7 @@ from wazuh_mcp_server.api.wazuh_indexer import IndexerNotConfiguredError
 from wazuh_mcp_server.auth import create_access_token
 from wazuh_mcp_server.config import WazuhConfig, get_config
 from wazuh_mcp_server.monitoring import ACTIVE_CONNECTIONS, setup_monitoring_middleware
+from wazuh_mcp_server.oidc import OIDCValidationError, OIDCTokenValidator
 from wazuh_mcp_server.resilience import GracefulShutdown
 from wazuh_mcp_server.security import (
     RateLimiter,
@@ -74,6 +75,21 @@ logger = logging.getLogger(__name__)
 
 # OAuth manager (initialized on startup if needed)
 _oauth_manager = None
+_oidc_validator: Optional[OIDCTokenValidator] = None
+
+
+def _oidc_challenge(config, error: Optional[str] = None, scope: Optional[str] = None) -> str:
+    """Build RFC 6750 / protected-resource discovery challenges without leaking internals."""
+    if error:
+        challenge = f'Bearer error="{error}"'
+        if scope:
+            challenge += f', scope="{scope}"'
+        return challenge
+    # Resource metadata is conventionally served at the origin.  Resource URL is
+    # intentionally used here because deployments may expose the app under /mcp.
+    parsed = urlparse(config.MCP_RESOURCE_URL)
+    metadata = f"{parsed.scheme}://{parsed.netloc}/.well-known/oauth-protected-resource"
+    return f'Bearer resource_metadata="{metadata}"'
 
 
 async def verify_authentication(authorization: Optional[str], config) -> Optional[Any]:
@@ -82,7 +98,7 @@ async def verify_authentication(authorization: Optional[str], config) -> Optiona
 
     Returns AuthToken if authenticated (None for authless mode).
     Raises HTTPException if authentication fails.
-    Supports: authless (none), bearer token, and OAuth modes.
+    Supports authless, legacy bearer/internal OAuth, and external OIDC modes.
     """
     from wazuh_mcp_server.auth import AuthToken
 
@@ -98,11 +114,26 @@ async def verify_authentication(authorization: Optional[str], config) -> Optiona
             scopes=scopes,
         )
 
-    # Authentication required
+    # Authentication required. Do not accept query-string credentials.
     if not authorization:
         raise HTTPException(
-            status_code=401, detail="Authorization header required", headers={"WWW-Authenticate": "Bearer"}
+            status_code=401, detail="Authorization required", headers={"WWW-Authenticate": _oidc_challenge(config) if config.is_oidc else "Bearer"}
         )
+    if len(authorization) > 16_500 or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid token", headers={"WWW-Authenticate": _oidc_challenge(config, "invalid_token") if config.is_oidc else "Bearer"})
+
+    if config.is_oidc:
+        global _oidc_validator
+        if _oidc_validator is None:
+            logger.error("OIDC validator is not initialized")
+            raise HTTPException(status_code=401, detail="Invalid token", headers={"WWW-Authenticate": _oidc_challenge(config, "invalid_token")})
+        try:
+            return await _oidc_validator.validate(authorization[7:])
+        except OIDCValidationError as exc:
+            logger.warning("OIDC authentication rejected: %s", exc.category)
+            if exc.category == "missing_scope":
+                raise HTTPException(status_code=403, detail="Insufficient scope", headers={"WWW-Authenticate": _oidc_challenge(config, "insufficient_scope", exc.required_scope)})
+            raise HTTPException(status_code=401, detail="Invalid token", headers={"WWW-Authenticate": _oidc_challenge(config, "invalid_token")})
 
     # OAuth mode
     if config.is_oauth:
@@ -387,7 +418,7 @@ async def get_or_create_session(session_id: Optional[str], origin: Optional[str]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle with proper startup and shutdown handling."""
-    global _oauth_manager
+    global _oauth_manager, _oidc_validator
 
     # === STARTUP ===
     # Attach log sanitization filter to prevent credential leakage
@@ -417,11 +448,17 @@ async def lifespan(app: FastAPI):
             _oauth_manager = init_oauth_manager(cfg)
             oauth_router = create_oauth_router(_oauth_manager)
             app.include_router(oauth_router)
-            logger.info("✅ OAuth 2.0 with DCR initialized")
+            logger.warning("Internal OAuth mode does not authenticate end users and is intended only for compatibility/development.")
+            logger.info("✅ Legacy internal OAuth 2.0 with DCR initialized")
             logger.info("   OAuth endpoints: /oauth/authorize, /oauth/token, /oauth/register")
             logger.info("   Discovery: /.well-known/oauth-authorization-server")
         except Exception as e:
             logger.error(f"❌ OAuth initialization failed: {e}")
+    elif cfg.is_oidc:
+        _oidc_validator = OIDCTokenValidator(cfg)
+        if not cfg.OIDC_VERIFY_SSL:
+            logger.warning("OIDC_VERIFY_SSL=false: TLS certificates will not be verified")
+        logger.info("External OIDC resource-server authentication enabled (issuer: %s)", cfg.OIDC_ISSUER_URL)
 
     # Log auth mode status
     if cfg.is_authless:
@@ -439,6 +476,8 @@ async def lifespan(app: FastAPI):
                 logger.info(f"   {default_key}")
                 logger.info("   Set MCP_API_KEY environment variable in production")
                 logger.info("=" * 60)
+    elif cfg.is_oidc:
+        logger.info("OIDC protected-resource metadata: /.well-known/oauth-protected-resource/mcp")
 
     # Start background session cleanup task (runs every 5 minutes regardless of traffic)
     async def _background_session_cleanup():
@@ -1374,6 +1413,29 @@ def _get_tool_scope(tool_name: str) -> str:
     return "wazuh:write" if tool_name in WRITE_SCOPE_TOOLS else "wazuh:read"
 
 
+def _enforce_payload_scopes(payload: Any, principal: Any) -> None:
+    """Reject a known MCP tool request before executing it with an HTTP 403.
+
+    Tool handlers retain their own check as defence in depth, including for legacy
+    transports.  This gives OAuth clients the RFC 6750 response they need.
+    """
+    requests = payload if isinstance(payload, list) else [payload]
+    for item in requests:
+        if not isinstance(item, dict) or item.get("method") != "tools/call":
+            continue
+        params = item.get("params") or {}
+        tool_name = params.get("name") if isinstance(params, dict) else None
+        required_scope = _get_tool_scope(tool_name) if isinstance(tool_name, str) else "wazuh:read"
+        if not principal or not principal.has_scope(required_scope):
+            if config.is_oidc:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Insufficient scope",
+                    headers={"WWW-Authenticate": _oidc_challenge(config, "insufficient_scope", required_scope)},
+                )
+            raise HTTPException(status_code=403, detail="Insufficient scope")
+
+
 async def handle_tools_list(params: Dict[str, Any], session: MCPSession) -> Dict[str, Any]:
     """Handle tools/list method - All 54 Wazuh Security Tools with pagination.
     Filters tools based on session token scopes."""
@@ -2117,10 +2179,18 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
 
     # Audit logging for destructive operations
     if tool_name in WRITE_SCOPE_TOOLS:
-        client_id = auth_token.api_key_id if auth_token else "unknown"
+        client_id = getattr(auth_token, "client_id", None) or getattr(auth_token, "api_key_id", "unknown")
+        subject = getattr(auth_token, "subject", None)
+        username = getattr(auth_token, "username", None)
+        safe_arguments = {
+            key: "[REDACTED]" if any(marker in key.lower() for marker in ("token", "secret", "password", "authorization")) else value
+            for key, value in arguments.items()
+            if key != "parameters"
+        }
         audit_logger.warning(
-            f"AUDIT: tool={tool_name} client={client_id} session={session.session_id} "
-            f"args={json.dumps({k: v for k, v in arguments.items() if k != 'parameters'}, default=str)}"
+            f"AUDIT: tool={tool_name} subject={subject} username={username} client={client_id} "
+            f"scopes={sorted(getattr(auth_token, 'scopes', []) or [])} groups={sorted(getattr(auth_token, 'groups', []) or [])} session={session.session_id} "
+            f"args={json.dumps(safe_arguments, default=str)}"
         )
 
     # Track tool execution for metrics
@@ -3197,6 +3267,8 @@ async def mcp_streamable_http_endpoint(
                     headers=response_headers,
                 )
 
+            _enforce_payload_scopes(body, auth_token)
+
             # Handle batch messages per MCP Streamable HTTP spec
             if isinstance(body, list):
                 if not body:
@@ -3376,12 +3448,16 @@ async def health_check():
             "mode": config.AUTH_MODE,
             "bearer_enabled": config.is_bearer,
             "oauth_enabled": config.is_oauth,
+            "oidc_enabled": config.is_oidc,
             "authless": config.is_authless,
         }
         if config.is_oauth:
             auth_info["oauth_dcr"] = config.OAUTH_ENABLE_DCR
             auth_info["oauth_endpoints"] = ["/oauth/authorize", "/oauth/token", "/oauth/register"]
             auth_info["oauth_discovery"] = "/.well-known/oauth-authorization-server"
+        elif config.is_oidc:
+            auth_info["oidc_issuer"] = config.OIDC_ISSUER_URL
+            auth_info["protected_resource_metadata"] = "/.well-known/oauth-protected-resource/mcp"
 
         # Determine overall status from component health
         if wazuh_status != "healthy":
@@ -3457,6 +3533,24 @@ async def oauth_metadata(request: Request):
     return JSONResponse(_oauth_manager.get_metadata(request))
 
 
+@app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
+@app.get("/.well-known/oauth-protected-resource/mcp/")
+@app.get("/.well-known/oauth-protected-resource/http")
+async def oauth_protected_resource_metadata():
+    """RFC 9728 metadata advertising Authentik as this resource's authorization server."""
+    if not config.is_oidc:
+        raise HTTPException(status_code=404, detail="External OIDC is not enabled")
+    return JSONResponse(
+        {
+            "resource": config.MCP_RESOURCE_URL,
+            "authorization_servers": [config.OIDC_ISSUER_URL],
+            "scopes_supported": ["wazuh:read", "wazuh:write"],
+            "bearer_methods_supported": ["header"],
+        }
+    )
+
+
 # Authentication endpoint for API key validation
 @app.post("/auth/token")
 async def get_auth_token(request: Request):
@@ -3465,6 +3559,9 @@ async def get_auth_token(request: Request):
     Accepts API key in request body as JSON: {"api_key": "wazuh_..."}
     Validates against configured API keys (MCP_API_KEY env var or auto-generated).
     """
+    if config.is_oidc:
+        # This server is a resource server in OIDC mode and must never mint tokens.
+        raise HTTPException(status_code=404, detail="Not found")
     try:
         body = await request.json()
         api_key = body.get("api_key")

@@ -3,6 +3,7 @@
 import os
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse
 
 
 class ConfigurationError(Exception):
@@ -165,13 +166,31 @@ class ServerConfig:
     # MCP Server settings
     MCP_HOST: str = "0.0.0.0"
     MCP_PORT: int = 3000
+    REQUEST_TIMEOUT_SECONDS: int = 30
 
     # Authentication settings
     AUTH_SECRET_KEY: str = ""
     TOKEN_LIFETIME_HOURS: int = 24
 
-    # Authentication mode: "bearer" (default), "oauth", or "none" (authless)
+    # Authentication mode: "bearer" (default), "oauth" (legacy), "oidc", or "none" (authless)
     AUTH_MODE: str = "bearer"
+
+    # External OIDC resource-server settings (when AUTH_MODE=oidc)
+    OIDC_ISSUER_URL: str = ""
+    OIDC_AUDIENCE: str = ""
+    OIDC_JWKS_URL: str = ""
+    OIDC_DISCOVERY_URL: str = ""
+    OIDC_VERIFY_SSL: bool = True
+    OIDC_ALLOWED_ALGORITHMS: tuple[str, ...] = ("RS256",)
+    OIDC_REQUIRED_SCOPES: tuple[str, ...] = ("wazuh:read",)
+    OIDC_CLOCK_SKEW_SECONDS: int = 30
+    OIDC_SCOPE_CLAIM: str = "scope"
+    OIDC_GROUPS_CLAIM: str = "groups"
+    OIDC_USERNAME_CLAIM: str = "preferred_username"
+    OIDC_READ_GROUPS: tuple[str, ...] = ()
+    OIDC_WRITE_GROUPS: tuple[str, ...] = ()
+    OIDC_JWKS_CACHE_SECONDS: int = 300
+    MCP_RESOURCE_URL: str = ""
 
     # OAuth settings (when AUTH_MODE=oauth)
     OAUTH_ISSUER_URL: str = ""  # Will be auto-set to server URL if not provided
@@ -214,7 +233,7 @@ class ServerConfig:
 
         # Validate auth mode
         auth_mode = os.getenv("AUTH_MODE", "bearer").lower()
-        if auth_mode not in ("bearer", "oauth", "none"):
+        if auth_mode not in ("bearer", "oauth", "oidc", "none"):
             auth_mode = "bearer"
 
         # Signing secret. In production with auth enabled it MUST be provided — a random
@@ -222,13 +241,39 @@ class ServerConfig:
         # deployments. Auto-generate only outside production (developer convenience).
         auth_secret = os.getenv("AUTH_SECRET_KEY", "").strip()
         if not auth_secret:
-            if environment == "production" and auth_mode != "none":
+            if environment == "production" and auth_mode not in ("none", "oidc"):
                 raise ConfigurationError(
-                    "AUTH_SECRET_KEY is required when ENVIRONMENT=production and AUTH_MODE is not 'none'.\n"
+                    "AUTH_SECRET_KEY is required when ENVIRONMENT=production for bearer or legacy oauth modes.\n"
                     "Generate one with: openssl rand -hex 32\n"
                     "Set it identically across all instances so tokens survive restarts and load balancing."
                 )
             auth_secret = secrets.token_hex(32)
+
+        def csv_env(name: str, default: str = "") -> tuple[str, ...]:
+            return tuple(value.strip() for value in os.getenv(name, default).split(",") if value.strip())
+
+        issuer = os.getenv("OIDC_ISSUER_URL", "").strip()
+        audience = os.getenv("OIDC_AUDIENCE", "").strip()
+        resource_url = os.getenv("MCP_RESOURCE_URL", "").strip()
+        discovery_url = os.getenv("OIDC_DISCOVERY_URL", "").strip()
+        jwks_url = os.getenv("OIDC_JWKS_URL", "").strip()
+        algorithms = csv_env("OIDC_ALLOWED_ALGORITHMS", "RS256")
+        if any(algorithm.lower() == "none" for algorithm in algorithms):
+            raise ConfigurationError("OIDC_ALLOWED_ALGORITHMS must never include 'none'")
+        if auth_mode == "oidc":
+            missing = [name for name, value in (("OIDC_ISSUER_URL", issuer), ("OIDC_AUDIENCE", audience), ("MCP_RESOURCE_URL", resource_url)) if not value]
+            if missing:
+                raise ConfigurationError(f"AUTH_MODE=oidc requires: {', '.join(missing)}")
+            if not algorithms:
+                raise ConfigurationError("OIDC_ALLOWED_ALGORITHMS must not be empty")
+            if not discovery_url:
+                discovery_url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+            if environment == "production":
+                for name, value in (("OIDC_ISSUER_URL", issuer), ("OIDC_AUDIENCE", audience), ("MCP_RESOURCE_URL", resource_url)):
+                    parsed = urlparse(value)
+                    loopback = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+                    if parsed.scheme != "https" and not loopback:
+                        raise ConfigurationError(f"{name} must use HTTPS in production (except loopback)")
 
         # Validate log level
         log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -247,11 +292,29 @@ class ServerConfig:
         return cls(
             MCP_HOST=os.getenv("MCP_HOST", "0.0.0.0"),
             MCP_PORT=validate_port(os.getenv("MCP_PORT", "3000"), "MCP_PORT"),
+            REQUEST_TIMEOUT_SECONDS=validate_positive_int(
+                os.getenv("REQUEST_TIMEOUT_SECONDS", "30"), "REQUEST_TIMEOUT_SECONDS", max_val=300
+            ),
             AUTH_SECRET_KEY=auth_secret,
             TOKEN_LIFETIME_HOURS=validate_positive_int(
                 os.getenv("TOKEN_LIFETIME_HOURS", "24"), "TOKEN_LIFETIME_HOURS", max_val=8760
             ),
             AUTH_MODE=auth_mode,
+            OIDC_ISSUER_URL=issuer,
+            OIDC_AUDIENCE=audience,
+            OIDC_JWKS_URL=jwks_url,
+            OIDC_DISCOVERY_URL=discovery_url,
+            OIDC_VERIFY_SSL=os.getenv("OIDC_VERIFY_SSL", "true").lower() == "true",
+            OIDC_ALLOWED_ALGORITHMS=algorithms,
+            OIDC_REQUIRED_SCOPES=csv_env("OIDC_REQUIRED_SCOPES", "wazuh:read"),
+            OIDC_CLOCK_SKEW_SECONDS=validate_positive_int(os.getenv("OIDC_CLOCK_SKEW_SECONDS", "30"), "OIDC_CLOCK_SKEW_SECONDS", max_val=300),
+            OIDC_SCOPE_CLAIM=os.getenv("OIDC_SCOPE_CLAIM", "scope"),
+            OIDC_GROUPS_CLAIM=os.getenv("OIDC_GROUPS_CLAIM", "groups"),
+            OIDC_USERNAME_CLAIM=os.getenv("OIDC_USERNAME_CLAIM", "preferred_username"),
+            OIDC_READ_GROUPS=csv_env("OIDC_READ_GROUPS"),
+            OIDC_WRITE_GROUPS=csv_env("OIDC_WRITE_GROUPS"),
+            OIDC_JWKS_CACHE_SECONDS=validate_positive_int(os.getenv("OIDC_JWKS_CACHE_SECONDS", "300"), "OIDC_JWKS_CACHE_SECONDS", max_val=86400),
+            MCP_RESOURCE_URL=resource_url,
             OAUTH_ISSUER_URL=os.getenv("OAUTH_ISSUER_URL", ""),
             OAUTH_ENABLE_DCR=os.getenv("OAUTH_ENABLE_DCR", "false").lower() == "true",
             OAUTH_ACCESS_TOKEN_TTL=validate_positive_int(
@@ -290,6 +353,11 @@ class ServerConfig:
     def is_oauth(self) -> bool:
         """Check if server is using OAuth authentication."""
         return self.AUTH_MODE == "oauth"
+
+    @property
+    def is_oidc(self) -> bool:
+        """Check if the server validates tokens issued by an external OIDC provider."""
+        return self.AUTH_MODE == "oidc"
 
     @property
     def is_bearer(self) -> bool:

@@ -55,7 +55,7 @@ Required for alert search, aggregation, and vulnerability tools (the vulnerabili
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AUTH_MODE` | `bearer` | `bearer`, `oauth`, or `none` (authless) |
+| `AUTH_MODE` | `bearer` | `oidc` (recommended production), `bearer`, legacy `oauth`, or `none` (authless) |
 | `AUTH_SECRET_KEY` | auto (dev only) | HMAC/JWT signing key. **Required when `ENVIRONMENT=production`** unless `AUTH_MODE=none`; the server refuses to start without it. Use the same value on every instance so tokens survive restarts and load balancing. Generate with `openssl rand -hex 32` |
 | `TOKEN_LIFETIME_HOURS` | `24` | Session-token lifetime |
 | `MCP_API_KEY` | auto (dev only) | A single pre-set API key in the form `wazuh_<43 chars>`. Generate with `python -c "import secrets; print('wazuh_' + secrets.token_urlsafe(32))"` |
@@ -67,6 +67,9 @@ Scopes are **fail-closed**: a token with no scope claim is treated as read-only,
 
 ### OAuth (only when `AUTH_MODE=oauth`)
 
+> **Legacy/development compatibility mode.** Internal OAuth does not authenticate an
+> end user and must not be used to protect a production SIEM. Use external OIDC below.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OAUTH_ISSUER_URL` | derived from request | Public issuer URL |
@@ -76,6 +79,30 @@ Scopes are **fail-closed**: a token with no scope claim is treated as read-only,
 | `OAUTH_AUTHORIZATION_CODE_TTL` | `600` | Authorization-code lifetime (seconds) |
 
 OAuth requires **PKCE with `S256`**; authorization codes are single-use and refresh tokens rotate on every use.
+
+### External OIDC (recommended production)
+
+Set `AUTH_MODE=oidc` to make Wazuh MCP an OAuth protected resource. It does not
+issue tokens, register clients, or expose `/oauth/authorize`; External OIDC provider performs
+the authorization-code + PKCE login flow and this server validates its access JWTs.
+
+| Variable | Required | Description                                                    |
+| --- | --- |----------------------------------------------------------------|
+| `MCP_RESOURCE_URL` | yes | Public resource URL, e.g. `https://wazuh-mcp.example.com/mcp`  |
+| `OIDC_ISSUER_URL` | yes | OIDC provider issuer URL                                       |
+| `OIDC_AUDIENCE` | yes | Expected access-token audience; normally `MCP_RESOURCE_URL`    |
+| `OIDC_DISCOVERY_URL` | no | Defaults to `<issuer>/.well-known/openid-configuration`        |
+| `OIDC_JWKS_URL` | no | Defaults to discovery's `jwks_uri`                             |
+| `OIDC_ALLOWED_ALGORITHMS` | no | Comma-separated allowlist, default `RS256`; `none` is rejected |
+| `OIDC_REQUIRED_SCOPES` | no | Baseline scopes, default `wazuh:read`                          |
+| `OIDC_READ_GROUPS` / `OIDC_WRITE_GROUPS` | no | Optional Authentik group-to-scope mapping                      |
+
+The server exposes `/.well-known/oauth-protected-resource` and
+`/.well-known/oauth-protected-resource/mcp`. Missing credentials return a 401
+with a `resource_metadata` challenge; invalid tokens return `invalid_token`.
+Tokens are accepted only in the `Authorization: Bearer` header. Signature, `kid`,
+expiration, issuer, audience, allowed algorithm and scopes are checked using OIDC
+discovery and cached JWKS. A JWKS rotation triggers a refresh for an unknown `kid`.
 
 ## Network, CORS & rate limiting
 
@@ -114,10 +141,11 @@ The server speaks plain HTTP on `MCP_PORT`. There is **no built-in HTTPS listene
 
 Configure via `AUTH_MODE`:
 
-| Mode | Value | Description |
-|------|-------|-------------|
-| **Bearer** | `bearer` | API-key → JWT/session-token auth (default) |
-| **OAuth** | `oauth` | OAuth 2.0 with PKCE (good for Claude Desktop) |
+| Mode | Value | Description                                                                       |
+|------|-------|-----------------------------------------------------------------------------------|
+| **Bearer** | `bearer` | API-key → JWT/session-token auth (default)                                        |
+| **External OIDC** | `oidc` | External authorization server (recommended production)                            |
+| **OAuth** | `oauth` | Legacy internal OAuth compatibility mode; not end-user authentication             |
 | **Authless** | `none` | No authentication; read-only unless `AUTHLESS_ALLOW_WRITE=true` (development only) |
 
 **Bearer — exchange an API key for a JWT:**
