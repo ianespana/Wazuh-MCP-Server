@@ -671,26 +671,26 @@ class SecurityValidator:
         # Patterns require SQL/command context to avoid false positives on
         # legitimate MCP tool names and JSON-RPC content
         self._compiled_patterns = [
-            # SQL Injection patterns (require SQL context around keywords)
-            re.compile(
-                r"(?i)\b(union\s+select|insert\s+into|delete\s+from|drop\s+(table|database)"
-                r"|alter\s+table|exec\s*\(|execute\s+|;\s*select\s+|;\s*drop\s+)"
+            (
+                "sql_injection",
+                re.compile(
+                    r"(?i)\b(union\s+select|insert\s+into|delete\s+from|"
+                    r"drop\s+(table|database)|alter\s+table|exec\s*\(|"
+                    r"execute\s+|;\s*select\s+|;\s*drop\s+)"
+                ),
             ),
-            # XSS patterns
-            re.compile(r"(?i)(<script|javascript:|onload=|onerror=)"),
-            # Path traversal
-            re.compile(r"(\.\./|\.\.\\|%2e%2e)"),
-            # Command injection (require shell context, not bare chars)
-            re.compile(r"(;\s*\w+\s|`[^`]+`|\$\([^)]+\)|\$\{[^}]+\})"),
+            ("xss", re.compile(r"(?i)(<script|javascript:|onload=|onerror=)")),
+            ("path_traversal", re.compile(r"(\.\./|\.\\|%2e%2e)", re.IGNORECASE)),
+            ("command_injection", re.compile(r"(;\s*\w+\s|`[^`]+`|\$\([^)]+\)|\$\{[^}]+\})")),
         ]
         self.max_payload_size = self.MAX_PAYLOAD_SIZE
 
-    def validate_request(self, request: Request, body: Optional[str] = None) -> tuple[bool, Optional[str]]:
-        """Validate request for security threats. Returns (is_safe, reason)."""
+    def validate_request(self, request: Request, body: Optional[str] = None) -> tuple[bool, Optional[str], Optional[tuple[str, Any]]]:
+        """Validate request for security threats, returning a safe detection summary."""
 
         # Check payload size
         if body and len(body) > self.max_payload_size:
-            return False, "Payload too large"
+            return False, "Payload too large", None
 
         # Check for suspicious patterns in user-controlled headers only
         # Skip standard framework/transport headers that legitimately contain semicolons, $, etc.
@@ -705,26 +705,35 @@ class SecurityValidator:
         for header_name, header_value in request.headers.items():
             if header_name.lower() in _skip_headers:
                 continue
-            if self._contains_suspicious_pattern(header_value):
-                return False, f"Suspicious pattern in header {header_name}"
+            detection = self._find_suspicious_pattern(header_value)
+            if detection:
+                return False, f"Suspicious pattern in header {header_name}", detection
 
         # Check query parameters
         for key, value in request.query_params.items():
-            if self._contains_suspicious_pattern(value):
-                return False, f"Suspicious pattern in query parameter {key}"
+            detection = self._find_suspicious_pattern(value)
+            if detection:
+                return False, f"Suspicious pattern in query parameter {key}", detection
 
         # Check body content
-        if body and self._contains_suspicious_pattern(body):
-            return False, "Suspicious pattern in request body"
+        if body:
+            detection = self._find_suspicious_pattern(body)
+            if detection:
+                return False, "Suspicious pattern in request body", detection
 
-        return True, None
+        return True, None, None
+
+    def _find_suspicious_pattern(self, text: str) -> Optional[tuple[str, Any]]:
+        """Return the named detector and match; never return the inspected body."""
+        for pattern_name, pattern in self._compiled_patterns:
+            match = pattern.search(text)
+            if match:
+                return pattern_name, match
+        return None
 
     def _contains_suspicious_pattern(self, text: str) -> bool:
-        """Check if text contains suspicious patterns using pre-compiled regex."""
-        for pattern in self._compiled_patterns:
-            if pattern.search(text):
-                return True
-        return False
+        """Compatibility helper for callers that only need a boolean result."""
+        return self._find_suspicious_pattern(text) is not None
 
 
 class SecurityManager:
@@ -806,10 +815,21 @@ class SecurityManager:
                 body = None
 
         # Validate for security threats
-        is_safe, reason = self.validator.validate_request(request, body)
+        is_safe, reason, detection = self.validator.validate_request(request, body)
         if not is_safe:
             self.metrics.suspicious_requests += 1
-            logger.warning(f"Suspicious request from {client_ip}: {reason}")
+            if detection:
+                pattern_name, match = detection
+                logger.warning(
+                    "Suspicious request from %s: detector=%s match=%r span=%s path=%s",
+                    client_ip,
+                    pattern_name,
+                    match.group(0),
+                    match.span(),
+                    request.url.path,
+                )
+            else:
+                logger.warning("Suspicious request from %s: %s path=%s", client_ip, reason, request.url.path)
             raise HTTPException(status_code=400, detail="Invalid request")
 
 
