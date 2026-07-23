@@ -79,6 +79,24 @@ class TestRequestEnvelopePolicy:
 
         assert validate_active_response_command("!firewall-drop", required=True) == "!firewall-drop"
 
+    @pytest.mark.asyncio
+    async def test_security_middleware_returns_http_errors_instead_of_reraising(self, monkeypatch):
+        from fastapi import HTTPException
+        from wazuh_mcp_server import security
+
+        async def reject(_request):
+            raise HTTPException(status_code=400, detail="Invalid request")
+
+        async def should_not_run(_request):
+            raise AssertionError("call_next must not run for a rejected request")
+
+        monkeypatch.setattr(security.memory_manager, "check_memory_usage", lambda: True)
+        monkeypatch.setattr(security.security_manager, "validate_request", reject)
+
+        response = await security.security_middleware(_request(), should_not_run)
+        assert response.status_code == 400
+        assert response.body == b'{"detail":"Invalid request"}'
+
 
 @pytest.mark.asyncio
 async def test_wazuh_client_initialization():

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import httpx
 from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -990,8 +991,16 @@ async def security_middleware(request: Request, call_next):
 
         return response
 
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        # Exception middleware is inside user middleware in the ASGI stack.
+        # Re-raising here can therefore escape FastAPI's HTTPException handler,
+        # leave the response unfinished, and be surfaced by a reverse proxy as
+        # a 502. Return the final response directly from this boundary instead.
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
     except Exception as e:
         logger.error(f"Security middleware error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
