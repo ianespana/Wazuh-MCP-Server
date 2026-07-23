@@ -37,6 +37,7 @@ from wazuh_mcp_server.security import (
     ToolValidationError,
     security_middleware,
     validate_active_response_command,
+    validate_active_response_parameters,
     validate_agent_id,
     validate_agent_status,
     validate_boolean,
@@ -2577,7 +2578,7 @@ async def handle_tools_call(params: Dict[str, Any], session: MCPSession) -> Dict
         elif tool_name == "wazuh_active_response":
             agent_id = validate_agent_id(arguments.get("agent_id"), required=True)
             command = validate_active_response_command(arguments.get("command"), required=True)
-            parameters = arguments.get("parameters")
+            parameters = validate_active_response_parameters(arguments.get("parameters"))
             result = await wazuh_client.run_active_response(agent_id, command, parameters)
             _success = True
             return _tool_result(f"Active Response Result:\n{json.dumps(result, indent=2, default=str)}")

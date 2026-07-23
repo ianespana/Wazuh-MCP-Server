@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from starlette.requests import Request
 
 # Add src to path
 src_path = Path(__file__).parent.parent.parent / "src"
@@ -25,6 +26,58 @@ async def test_server_imports():
     assert app is not None
     config = get_config()
     assert config is not None
+
+
+def _request(path: str = "/mcp", query: bytes = b"", headers=None) -> Request:
+    return Request({
+        "type": "http", "method": "POST", "scheme": "http", "path": path,
+        "raw_path": path.encode(), "query_string": query,
+        "headers": headers or [(b"host", b"testserver")],
+        "client": ("127.0.0.1", 50000), "server": ("testserver", 80),
+    })
+
+
+class TestRequestEnvelopePolicy:
+    def test_mcp_metadata_with_shell_like_text_is_not_blocked(self):
+        from wazuh_mcp_server.security import SecurityValidator
+
+        body = b'{"jsonrpc":"2.0","method":"tools/call","params":{"metadata":"; build project"}}'
+        safe, reason, signals = SecurityValidator().validate_request(_request(), body)
+        assert safe is True
+        assert reason is None
+        assert signals == []
+
+    def test_oversized_payload_is_rejected(self):
+        from wazuh_mcp_server.security import SecurityValidator
+
+        validator = SecurityValidator()
+        safe, reason, _signals = validator.validate_request(_request(), b"x" * (validator.MAX_PAYLOAD_SIZE + 1))
+        assert safe is False
+        assert reason == "Payload too large"
+
+    def test_nonstandard_header_signal_does_not_block_request(self):
+        from wazuh_mcp_server.security import SecurityValidator
+
+        safe, reason, signals = SecurityValidator().validate_request(
+            _request(headers=[(b"host", b"testserver"), (b"x-client-metadata", b"$(whoami)")])
+        )
+        assert safe is True
+        assert reason is None
+        assert signals[0][0:2] == ("header", "x-client-metadata")
+
+    def test_active_response_parameters_are_typed_and_bounded(self):
+        from wazuh_mcp_server.security import ToolValidationError, validate_active_response_parameters
+
+        assert validate_active_response_parameters({"src-ip": "192.0.2.1", "timeout": 60}) == {
+            "src-ip": "192.0.2.1", "timeout": "60"
+        }
+        with pytest.raises(ToolValidationError):
+            validate_active_response_parameters({"src-ip": ["192.0.2.1"]})
+
+    def test_stateful_active_response_command_reaches_command_allowlist(self):
+        from wazuh_mcp_server.security import validate_active_response_command
+
+        assert validate_active_response_command("!firewall-drop", required=True) == "!firewall-drop"
 
 
 @pytest.mark.asyncio

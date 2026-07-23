@@ -4,6 +4,7 @@ Production security hardening and edge case handling for Wazuh MCP Server
 Implements comprehensive security measures and error handling
 """
 
+import hashlib
 import ipaddress
 import logging
 import os
@@ -368,7 +369,10 @@ def validate_boolean(value: Any, default: bool = True, param_name: str = "flag")
 
 # Regex patterns for action tool parameter validation
 USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9._@-]{1,128}$")
-AR_COMMAND_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+# Wazuh stateful active-response commands use a leading ``!``.  Membership in
+# the actual command allowlist is enforced by WazuhClient.ALLOWED_AR_COMMANDS.
+AR_COMMAND_PATTERN = re.compile(r"^!?[a-zA-Z0-9_-]{1,64}$")
+AR_PARAMETER_KEY_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 
 
 def validate_ip_address(value: Any, required: bool = False, param_name: str = "ip_address") -> Optional[str]:
@@ -449,6 +453,46 @@ def validate_active_response_command(value: Any, required: bool = False, param_n
         )
 
     return command
+
+
+def validate_active_response_parameters(value: Any, param_name: str = "parameters") -> Optional[Dict[str, str]]:
+    """Validate generic active-response parameters before they reach an agent.
+
+    Parameters are eventually supplied as command arguments on an endpoint.
+    Keep this boundary intentionally narrow: only a small mapping of scalar
+    values is accepted.  WazuhClient performs its final shell-safe argument
+    validation immediately before calling the Wazuh API.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ToolValidationError(param_name, "must be an object", "Provide key/value command parameters")
+    if len(value) > 16:
+        raise ToolValidationError(param_name, "contains too many entries", "Provide at most 16 parameters")
+
+    validated: Dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not AR_PARAMETER_KEY_PATTERN.fullmatch(key):
+            raise ToolValidationError(
+                param_name,
+                f"contains invalid parameter name '{key}'",
+                "Parameter names must start with a letter and use only letters, numbers, _ or -",
+            )
+        if isinstance(item, (dict, list, tuple, set)) or item is None:
+            raise ToolValidationError(
+                param_name,
+                f"parameter '{key}' must be a scalar value",
+                "Use a string, number, or boolean value",
+            )
+        item_text = str(item)
+        if not item_text or len(item_text) > 256 or "\x00" in item_text:
+            raise ToolValidationError(
+                param_name,
+                f"parameter '{key}' has an invalid value",
+                "Values must be non-empty, contain no null bytes, and be at most 256 characters",
+            )
+        validated[key] = item_text
+    return validated
 
 
 def validate_input(value: str, max_length: int = 1000, allowed_chars: Optional[str] = None) -> bool:
@@ -588,6 +632,7 @@ class SecurityMetrics:
     failed_authentications: int = 0
     rate_limit_violations: int = 0
     suspicious_requests: int = 0
+    suspicious_signals: int = 0
     blocked_ips: Set[str] = None
     last_reset: datetime = None
 
@@ -659,17 +704,29 @@ class RateLimiter:
 
 
 class SecurityValidator:
-    """Validate requests for security threats."""
+    """Enforce HTTP-envelope limits and observe, rather than parse, content.
+
+    MCP requests contain arbitrary analyst text and tool metadata.  Searching
+    the raw JSON envelope for shell/SQL-looking fragments produces false
+    positives and is not a security boundary: values are protected at the
+    specific tool and command-execution sinks instead.
+    """
 
     # Pre-compiled regex patterns for performance (class-level constants)
     MAX_PAYLOAD_SIZE = 1024 * 1024  # 1MB
+    MAX_REQUEST_TARGET_SIZE = 8 * 1024
+    MAX_HEADER_COUNT = 100
+    MAX_HEADER_VALUE_SIZE = 8 * 1024
+    MAX_QUERY_PARAMETERS = 50
+    MAX_QUERY_KEY_SIZE = 256
+    MAX_QUERY_VALUE_SIZE = 4 * 1024
 
     def __init__(self):
         import re
 
-        # Pre-compile patterns at initialization for O(1) matching per pattern
-        # Patterns require SQL/command context to avoid false positives on
-        # legitimate MCP tool names and JSON-RPC content
+        # These patterns are retained only as *non-blocking telemetry* for
+        # non-standard headers and query strings. They must never be applied
+        # to the raw MCP JSON body; semantic policy belongs at each tool sink.
         self._compiled_patterns = [
             (
                 "sql_injection",
@@ -685,12 +742,23 @@ class SecurityValidator:
         ]
         self.max_payload_size = self.MAX_PAYLOAD_SIZE
 
-    def validate_request(self, request: Request, body: Optional[str] = None) -> tuple[bool, Optional[str], Optional[tuple[str, Any]]]:
-        """Validate request for security threats, returning a safe detection summary."""
+    def validate_request(self, request: Request, body: Optional[bytes] = None) -> tuple[bool, Optional[str], List[tuple[str, str, Any]]]:
+        """Validate structural request limits and return non-blocking signals."""
 
         # Check payload size
-        if body and len(body) > self.max_payload_size:
-            return False, "Payload too large", None
+        if body is not None and len(body) > self.max_payload_size:
+            return False, "Payload too large", []
+
+        if len(request.scope.get("raw_path", b"")) + len(request.scope.get("query_string", b"")) > self.MAX_REQUEST_TARGET_SIZE:
+            return False, "Request target too large", []
+
+        if len(request.headers) > self.MAX_HEADER_COUNT:
+            return False, "Too many headers", []
+
+        if len(request.query_params) > self.MAX_QUERY_PARAMETERS:
+            return False, "Too many query parameters", []
+
+        signals: List[tuple[str, str, Any]] = []
 
         # Check for suspicious patterns in user-controlled headers only
         # Skip standard framework/transport headers that legitimately contain semicolons, $, etc.
@@ -703,25 +771,23 @@ class SecurityValidator:
             "last-event-id", "sec-websocket-key", "sec-websocket-version", "upgrade",
         }
         for header_name, header_value in request.headers.items():
+            if len(header_value) > self.MAX_HEADER_VALUE_SIZE:
+                return False, f"Header {header_name} too large", []
             if header_name.lower() in _skip_headers:
                 continue
             detection = self._find_suspicious_pattern(header_value)
             if detection:
-                return False, f"Suspicious pattern in header {header_name}", detection
+                signals.append(("header", header_name, detection))
 
         # Check query parameters
         for key, value in request.query_params.items():
+            if len(key) > self.MAX_QUERY_KEY_SIZE or len(value) > self.MAX_QUERY_VALUE_SIZE:
+                return False, "Query parameter too large", []
             detection = self._find_suspicious_pattern(value)
             if detection:
-                return False, f"Suspicious pattern in query parameter {key}", detection
+                signals.append(("query", key, detection))
 
-        # Check body content
-        if body:
-            detection = self._find_suspicious_pattern(body)
-            if detection:
-                return False, "Suspicious pattern in request body", detection
-
-        return True, None, None
+        return True, None, signals
 
     def _find_suspicious_pattern(self, text: str) -> Optional[tuple[str, Any]]:
         """Return the named detector and match; never return the inspected body."""
@@ -804,33 +870,35 @@ class SecurityManager:
                 headers={"Retry-After": str(retry_after)} if retry_after else {},
             )
 
-        # Read request body for validation
+        # Read raw bytes only to enforce the payload limit. Do not inspect the
+        # MCP JSON text: it is data, not a shell command.
         body = None
         if request.method == "POST":
             try:
                 body = await request.body()
-                body = body.decode("utf-8") if body else None
-            except (UnicodeDecodeError, RuntimeError) as e:
+            except RuntimeError as e:
                 logger.debug(f"Failed to read request body: {e}")
                 body = None
 
-        # Validate for security threats
-        is_safe, reason, detection = self.validator.validate_request(request, body)
+        # Validate structural limits. Pattern matches are signals, not blocks:
+        # the relevant tool validators protect execution/query sinks.
+        is_safe, reason, signals = self.validator.validate_request(request, body)
         if not is_safe:
             self.metrics.suspicious_requests += 1
-            if detection:
-                pattern_name, match = detection
-                logger.warning(
-                    "Suspicious request from %s: detector=%s match=%r span=%s path=%s",
-                    client_ip,
-                    pattern_name,
-                    match.group(0),
-                    match.span(),
-                    request.url.path,
-                )
-            else:
-                logger.warning("Suspicious request from %s: %s path=%s", client_ip, reason, request.url.path)
+            logger.warning("Rejected request from %s: %s path=%s", client_ip, reason, request.url.path)
             raise HTTPException(status_code=400, detail="Invalid request")
+
+        for location, name, detection in signals:
+            pattern_name, match = detection
+            # Do not log attacker-controlled text.  The fingerprint lets SOC
+            # correlate repeated signals without leaking data into logs.
+            fingerprint = hashlib.sha256(match.group(0).encode("utf-8")).hexdigest()[:12]
+            field_fingerprint = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+            self.metrics.suspicious_signals += 1
+            logger.info(
+                "Request security signal from %s: detector=%s location=%s field_fingerprint=%s match_length=%s fingerprint=%s path=%s",
+                client_ip, pattern_name, location, field_fingerprint, len(match.group(0)), fingerprint, request.url.path,
+            )
 
 
 class ConnectionPoolManager:
